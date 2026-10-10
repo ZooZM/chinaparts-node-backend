@@ -1,4 +1,16 @@
-import { renderRedirectPage } from './reels-redirect.controller';
+import { ACCESS_KEY } from '../../common/guards/access.decorator';
+import {
+  ReelsRedirectController,
+  renderRedirectPage,
+} from './reels-redirect.controller';
+
+describe('ReelsRedirectController', () => {
+  it('is public: a shared link opens in a browser with no session (FR-039a)', () => {
+    expect(Reflect.getMetadata(ACCESS_KEY, ReelsRedirectController)).toBe(
+      'public',
+    );
+  });
+});
 
 describe('renderRedirectPage (FR-039a)', () => {
   it('redirects iPhone user agents to the App Store', () => {

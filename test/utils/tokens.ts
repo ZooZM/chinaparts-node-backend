@@ -2,7 +2,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { ResultSetHeader } from 'mysql2/promise';
 import type { TestInfra } from './containers';
 
-export type TokenType = 'customer' | 'seller' | 'admin';
+export type PersonKind = 'customer' | 'seller';
+export type TokenType = PersonKind | 'admin';
 
 const MODEL: Record<TokenType, string> = {
   customer: 'App\\Models\\Customer',

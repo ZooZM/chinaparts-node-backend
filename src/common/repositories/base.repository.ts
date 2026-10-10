@@ -35,7 +35,7 @@ export abstract class BaseRepository<T extends Document> {
   ): Promise<T | null> {
     return this.model
       .findOneAndUpdate(filterQuery, updateQuery, {
-        new: true,
+        returnDocument: 'after',
         ...options,
       })
       .exec();

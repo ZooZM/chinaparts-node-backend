@@ -247,7 +247,7 @@ description: "Task list for the China Parts Reels Service"
     - `createPublishedReel(sellerExternalId, opts)` writes a reel and its media through `StorageService` and `ReelLifecycleService`, for tests that don't exercise upload.
     - `runSync()` runs one standing sync directly.
     - `drainQueue(name)` waits until a BullMQ queue is empty.
-- [ ] T041 [P] Port `Ciro:test/reels.e2e-spec.ts` to `test/e2e/reels-regression.e2e-spec.ts` using the new harness, with `issueToken` replacing the JWT login and `reels_accounts` replacing `User`. Every ported behavior must still pass. Skip assertions about features this spec drops, such as sending a reel to a chat, and explain why in a comment.
+- [X] T041 [P] Port `Ciro:test/reels.e2e-spec.ts` to `test/e2e/reels-regression.e2e-spec.ts` using the new harness, with `issueToken` replacing the JWT login and `reels_accounts` replacing `User`. Every ported behavior must still pass. Skip assertions about features this spec drops, such as sending a reel to a chat, and explain why in a comment.
 - [X] T042 [P] Write `test/e2e/auth.e2e-spec.ts` covering FR-003 to FR-007, FR-004a, and FR-005.
   - **Valid tokens**: customer and seller tokens work with no other sign-in.
   - **Rejected tokens**: an unknown token, an expired one, and an admin-type one each return `401 AUTH_INVALID_SESSION`.

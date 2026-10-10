@@ -1,6 +1,7 @@
 import { getQueueToken } from '@nestjs/bullmq';
+import { getModelToken } from '@nestjs/mongoose';
 import type { Queue } from 'bullmq';
-import { Types } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,15 @@ import { ReelLifecycleService } from '../../src/modules/reels/lifecycle/reel-lif
 import { REELS_REPOSITORY } from '../../src/modules/reels/reels.repository';
 import type { ReelsRepository } from '../../src/modules/reels/reels.repository';
 import { StorageService } from '../../src/common/storage/storage.service';
+import { normalizeForMatch } from '../../src/common/text/normalize-for-match';
+import {
+  NotificationEvent,
+  NotificationEventDocument,
+} from '../../src/modules/reels/schemas/notification-event.schema';
+import {
+  Reel,
+  ReelDocument,
+} from '../../src/modules/reels/schemas/reel.schema';
 import type { TestApp } from './app';
 
 export const SAMPLE_10S = join(
@@ -46,26 +56,38 @@ export async function accountIdOf(
   return account._id.toString();
 }
 
-/**
- * A published reel, made directly for tests that are not about uploading: the files are stored
- * privately, the reel is created and published, and the lifecycle makes the files public, so
- * everything downstream (feeds, media URLs, standing) sees a reel exactly as it would for real.
- */
-export async function createPublishedReel(
-  testApp: TestApp,
-  sellerExternalId: number,
-  options: {
-    description?: string;
-    hashtags?: string[];
-    hashtagsNormalized?: string[];
-    creatorId?: string;
-  } = {},
-): Promise<{
+export type SeededStatus =
+  'pending_moderation' | 'published' | 'rejected' | 'hidden';
+
+export interface SeededReel {
   id: string;
   creatorId: string;
   videoKey: string;
   thumbnailKey: string;
-}> {
+}
+
+export interface SeedReelOptions {
+  status?: SeededStatus;
+  description?: string;
+  hashtags?: string[];
+  hashtagsNormalized?: string[];
+  /** Default: the creator's reels account, provisioned on first use. */
+  creatorId?: string;
+}
+
+/**
+ * A reel made directly, for tests that are not about uploading. The files are stored privately
+ * and the reel is created exactly as an upload would create it (pending), then taken to `status`:
+ * `published` goes through the real publish and lifecycle, so the files become public and
+ * everything downstream (feeds, media URLs, standing) sees a reel as it would for real. `rejected`
+ * and `hidden` are set on the document, which is what the API-level visibility rules read.
+ */
+export async function createReel(
+  testApp: TestApp,
+  sellerExternalId: number,
+  options: SeedReelOptions = {},
+): Promise<SeededReel> {
+  const status = options.status ?? 'published';
   const creatorId =
     options.creatorId ??
     (await accountIdOf(testApp, 'seller', sellerExternalId));
@@ -91,19 +113,53 @@ export async function createPublishedReel(
     await rm(workDir, { recursive: true, force: true });
   }
 
+  const hashtags = options.hashtags ?? [];
   await reels.createReel({
     id,
     creatorId,
     videoKey,
     thumbnailKey,
     description: options.description ?? '',
-    hashtags: options.hashtags ?? [],
-    hashtagsNormalized: options.hashtagsNormalized ?? [],
+    hashtags,
+    hashtagsNormalized:
+      options.hashtagsNormalized ??
+      hashtags.map((tag) => normalizeForMatch(tag)),
     mentions: [],
   });
-  const published = await reels.publishPending(id);
-  if (published) await lifecycle.onPublished(published);
+
+  if (status === 'published') {
+    const published = await reels.publishPending(id);
+    if (published) await lifecycle.onPublished(published);
+  } else if (status !== 'pending_moderation') {
+    await reelModel(testApp).updateOne({ _id: id }, { $set: { status } });
+  }
   return { id, creatorId, videoKey, thumbnailKey };
+}
+
+/** A published reel: the common case of {@link createReel}. */
+export function createPublishedReel(
+  testApp: TestApp,
+  sellerExternalId: number,
+  options: Omit<SeedReelOptions, 'status'> = {},
+): Promise<SeededReel> {
+  return createReel(testApp, sellerExternalId, {
+    ...options,
+    status: 'published',
+  });
+}
+
+/** The reels collection, for assertions the API deliberately does not expose (report counts). */
+export function reelModel(testApp: TestApp): Model<ReelDocument> {
+  return testApp.app.get<Model<ReelDocument>>(getModelToken(Reel.name));
+}
+
+/** The durable notification events, which is what a push is decided from. */
+export function notificationEventModel(
+  testApp: TestApp,
+): Model<NotificationEventDocument> {
+  return testApp.app.get<Model<NotificationEventDocument>>(
+    getModelToken(NotificationEvent.name),
+  );
 }
 
 /** Waits until a queue has nothing waiting, active or delayed, so a test can assert on the outcome. */

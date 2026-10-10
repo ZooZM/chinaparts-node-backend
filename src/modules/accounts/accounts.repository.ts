@@ -184,7 +184,7 @@ export class AccountsRepository extends BaseRepository<ReelsAccountDocument> {
       .findByIdAndUpdate(
         objectId,
         { $set: { ...data, missingSince: null } },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .lean<ReelsAccountLean>()
       .exec();
@@ -241,7 +241,11 @@ export class AccountsRepository extends BaseRepository<ReelsAccountDocument> {
     if (!objectId) return null;
     try {
       return await this.model
-        .findByIdAndUpdate(objectId, { $set: data }, { new: true })
+        .findByIdAndUpdate(
+          objectId,
+          { $set: data },
+          { returnDocument: 'after' },
+        )
         .lean<ReelsAccountLean>()
         .exec();
     } catch (error) {
@@ -319,7 +323,7 @@ export class AccountsRepository extends BaseRepository<ReelsAccountDocument> {
       .findByIdAndUpdate(
         objectId,
         Object.keys(inc).length > 0 ? { $inc: inc } : {},
-        { new: true },
+        { returnDocument: 'after' },
       )
       .select({ followersCount: 1, followingCount: 1, totalLikes: 1 })
       .lean<AccountCounters>()

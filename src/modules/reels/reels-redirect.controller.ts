@@ -1,10 +1,12 @@
 import { Controller, Get, Param, Res } from '@nestjs/common';
 import type { Response } from 'express';
+import { Access } from '../../common/guards/access.decorator';
 
 /**
  * Public (unauthenticated) browser-facing fallback for reel deep links
  * opened without the CiroChat app installed (FR-039a). NOT under `/api` —
- * intentionally outside `JwtAuthGuard` and the JSON response envelope.
+ * outside the JSON response envelope, and `@Access('public')` so the global
+ * guard does not ask for a session (a route without a level is signed-in).
  *
  * Store URLs are placeholders until the app is published; override via env.
  */
@@ -42,6 +44,7 @@ export function renderRedirectPage(
 }
 
 @Controller('reels')
+@Access('public')
 export class ReelsRedirectController {
   @Get(':id')
   redirect(@Param('id') id: string, @Res() res: Response) {

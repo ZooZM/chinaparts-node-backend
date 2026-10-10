@@ -625,7 +625,7 @@ export class ReelsDbRepository implements ReelsRepository {
         .findOneAndUpdate(
           { _id: videoId },
           { $inc: { likesCount: delta } },
-          { new: true },
+          { returnDocument: 'after' },
         )
         .select({ likesCount: 1 })
         .lean<{ likesCount: number }>()
@@ -726,7 +726,7 @@ export class ReelsDbRepository implements ReelsRepository {
       .findOneAndUpdate(
         { _id: videoId },
         { $inc: { commentsCount: 1 } },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .select({ commentsCount: 1 })
       .lean<{ commentsCount: number }>()
@@ -768,7 +768,7 @@ export class ReelsDbRepository implements ReelsRepository {
       .findOneAndUpdate(
         { _id: videoId },
         { $inc: { sharesCount: 1 } },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .select({ sharesCount: 1 })
       .lean<{ sharesCount: number }>()
@@ -904,7 +904,7 @@ export class ReelsDbRepository implements ReelsRepository {
       .findOneAndUpdate(
         { _id: videoId },
         { $inc: { viewsCount: 1 } },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .select({ viewsCount: 1 })
       .lean<{ viewsCount: number }>()
@@ -936,7 +936,7 @@ export class ReelsDbRepository implements ReelsRepository {
       .findOneAndUpdate(
         { _id: videoId },
         { $inc: { viewsCount: 1 } },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .select({ viewsCount: 1 })
       .lean<{ viewsCount: number }>()
@@ -1418,7 +1418,7 @@ export class ReelsDbRepository implements ReelsRepository {
       .findOneAndUpdate(
         { _id: videoId },
         { $inc: { reportsCount: 1 } },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .select({ reportsCount: 1 })
       .lean<{ reportsCount: number }>()
@@ -1551,7 +1551,7 @@ export class ReelsDbRepository implements ReelsRepository {
 
     const updated = await this.reelModel
       .findOneAndUpdate({ _id: videoId, status: ReelStatus.HIDDEN }, update, {
-        new: true,
+        returnDocument: 'after',
       })
       .lean<ReelLean>()
       .exec();
@@ -1639,7 +1639,7 @@ export class ReelsDbRepository implements ReelsRepository {
       .findOneAndUpdate(
         { _id: objectId, status: ReelStatus.PENDING_MODERATION },
         { $set: { status: ReelStatus.PUBLISHED, publishedAt: new Date() } },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .lean<ReelLean>()
       .exec();
@@ -1667,7 +1667,7 @@ export class ReelsDbRepository implements ReelsRepository {
             },
           },
         },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .lean<ReelLean>()
       .exec();
