@@ -648,7 +648,7 @@ description: "Task list for the China Parts Reels Service"
 
 ### Tests for User Story 8 ⚠️
 
-- [ ] T089 [P] [US8] Write `test/e2e/reposts.e2e-spec.ts`.
+- [X] T089 [P] [US8] Write `test/e2e/reposts.e2e-spec.ts`.
   - **Basics**: a repost appears in the follower's first For You page, and removing it takes it away. Two followed reposters still show the reel once.
   - **Once per pass (FR-017, FR-019)**: with 15 reels and limit 5, a seeded repost of an older reel never reappears on pages 2 and 3 of pass 0. It appears exactly once in pass 1.
   - **Badge (FR-060)**: customer 1 follows customer 2 only. Customer 2 and seller 3 both repost the same reel. Customer 1 sees `repostersCount` 1 and one `topReposters` entry. A guest sees 0 and `[]`.
@@ -657,8 +657,8 @@ description: "Task list for the China Parts Reels Service"
 
 ### Implementation for User Story 8
 
-- [ ] T090 [US8] Convert `getReposted` (EP5) and `getReposters` (EP18) in `src/modules/reels/reels-db.repository.ts` to keyset paging on the repost's `(createdAt, _id)`, reusing `feed-cursor.ts`.
-- [ ] T091 [US8] Update `getRepostAttributions` in `src/modules/reels/reels-db.repository.ts`.
+- [X] T090 [US8] Convert `getReposted` (EP5) and `getReposters` (EP18) in `src/modules/reels/reels-db.repository.ts` to keyset paging on the repost's `(createdAt, _id)`, reusing `feed-cursor.ts`.
+- [X] T091 [US8] Update `getRepostAttributions` in `src/modules/reels/reels-db.repository.ts`.
   - **Exclusions**: drop reposters and creators in the exclusion set.
   - **Cap**: scan only the 50 most recent followee reposts (R9).
   - **Count**: keep the ported viewer-relative count (followees plus the viewer).

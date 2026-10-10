@@ -1324,22 +1324,31 @@ export class ReelsDbRepository implements ReelsRepository {
     targetUserId: string,
     params: { cursor?: string; limit: number; excludeCreatorIds: string[] },
   ): Promise<Page<ReelRecord>> {
+    const position = decodeListCursor(params.cursor);
     const reposterId = toObjectId(targetUserId);
     if (!reposterId) return { items: [], nextCursor: null };
-    const offset = this.parseCursor(params.cursor);
 
-    const total = await this.repostModel.countDocuments({ reposterId }).exec();
-    if (total === 0) return { items: [], nextCursor: null };
-
+    // One more than the page, to know whether there is a next one without counting.
     const relations = await this.repostModel
-      .find({ reposterId })
+      .find(
+        position
+          ? { $and: [{ reposterId }, this.before(position)] }
+          : { reposterId },
+      )
       .sort({ createdAt: -1, _id: -1 })
-      .skip(offset)
-      .limit(params.limit)
-      .lean<Array<{ videoId: Types.ObjectId }>>()
+      .limit(params.limit + 1)
+      .lean<
+        Array<{
+          _id: Types.ObjectId;
+          videoId: Types.ObjectId;
+          createdAt?: Date;
+        }>
+      >()
       .exec();
+    const page = relations.slice(0, params.limit);
+    const last = page[page.length - 1];
     const ordered = await this.reelsInOrder(
-      relations.map((r) => r.videoId),
+      page.map((r) => r.videoId),
       viewerId,
       params.excludeCreatorIds,
     );
@@ -1370,10 +1379,16 @@ export class ReelsDbRepository implements ReelsRepository {
       item.topReposters = stack.slice(0, 3);
     }
 
-    const nextOffset = offset + params.limit;
     return {
       items,
-      nextCursor: nextOffset < total ? String(nextOffset) : null,
+      nextCursor:
+        relations.length > params.limit && last
+          ? encodeFeedCursor({
+              pass: 0,
+              createdAt: last.createdAt ?? new Date(0),
+              id: last._id.toString(),
+            })
+          : null,
     };
   }
 
@@ -1579,48 +1594,66 @@ export class ReelsDbRepository implements ReelsRepository {
       excludeUserIds: string[];
     },
   ): Promise<Page<FollowedUserDto> | null> {
+    const position = decodeListCursor(params.cursor);
     const videoId = toObjectId(reelId);
     if (!videoId) return null;
 
+    // The reel must be visible to the viewer, which includes its creator not being excluded.
     const reel = await this.reelModel
-      .findOne({ _id: videoId, ...this.visibilityFilter(params.viewerId) })
+      .findOne({
+        _id: videoId,
+        ...this.excludeFilter(params.excludeUserIds),
+        ...this.visibilityFilter(params.viewerId),
+      })
       .select({ _id: 1 })
       .lean<{ _id: Types.ObjectId }>()
       .exec();
     if (!reel) return null;
 
     const excludeIds = toObjectIds(params.excludeUserIds);
-    const filter: Record<string, unknown> = {
-      videoId,
-      ...(excludeIds.length > 0 ? { reposterId: { $nin: excludeIds } } : {}),
-    };
-
-    const offset = this.parseCursor(params.cursor);
-    const total = await this.repostModel.countDocuments(filter).exec();
-    if (total === 0) return { items: [], nextCursor: null };
+    const conditions: Record<string, unknown>[] = [
+      {
+        videoId,
+        ...(excludeIds.length > 0 ? { reposterId: { $nin: excludeIds } } : {}),
+      },
+    ];
+    if (position) conditions.push(this.before(position));
 
     const reposts = await this.repostModel
-      .find(filter)
+      .find({ $and: conditions })
       .sort({ createdAt: -1, _id: -1 })
-      .skip(offset)
-      .limit(params.limit)
-      .lean<Array<{ reposterId: Types.ObjectId }>>()
+      .limit(params.limit + 1)
+      .lean<
+        Array<{
+          _id: Types.ObjectId;
+          reposterId: Types.ObjectId;
+          createdAt?: Date;
+        }>
+      >()
       .exec();
+    const page = reposts.slice(0, params.limit);
+    const last = page[page.length - 1];
 
     const accounts = await this.accounts.findByIdsLean(
-      reposts.map((r) => r.reposterId.toString()),
+      page.map((r) => r.reposterId.toString()),
       ['username', 'name', 'avatarUrl'],
     );
     const accountById = new Map(accounts.map((a) => [a._id.toString(), a]));
-    const items = reposts
+    const items = page
       .map((r) => accountById.get(r.reposterId.toString()))
       .filter((account): account is NonNullable<typeof account> => !!account)
       .map(summaryOf);
 
-    const nextOffset = offset + params.limit;
     return {
       items,
-      nextCursor: nextOffset < total ? String(nextOffset) : null,
+      nextCursor:
+        reposts.length > params.limit && last
+          ? encodeFeedCursor({
+              pass: 0,
+              createdAt: last.createdAt ?? new Date(0),
+              id: last._id.toString(),
+            })
+          : null,
     };
   }
 

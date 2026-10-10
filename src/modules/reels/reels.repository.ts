@@ -89,9 +89,11 @@ export interface ReelRecord {
   // Non-null only on For You repost-injected items and on Reposts-list items: the most recent
   // relevant reposter.
   repostedBy: AccountSummary | null;
-  // Viewer-relative (FR-060): the reposters the viewer follows, plus the viewer. `repostersCount`
-  // is never a total, and both are 0 and [] for signed-out visitors and where there is no repost
-  // context.
+  // Viewer-relative (FR-060): the accounts the viewer follows who reposted this reel, plus the
+  // viewer if they did. It is never a total: a stranger's repost is not in it, so two viewers can
+  // see different numbers on the same reel. Reposters the viewer blocked, and reposters out of
+  // good standing, are left out. Both fields are 0 and [] for signed-out visitors and wherever
+  // there is no repost context. `topReposters` holds at most the three most recent.
   repostersCount: number;
   topReposters: AccountSummary[];
   // True whenever the caller (not just a followee) has reposted this reel.
