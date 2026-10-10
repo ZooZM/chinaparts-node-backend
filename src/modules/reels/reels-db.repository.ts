@@ -63,6 +63,9 @@ import {
   UserSearchResultDto,
 } from './reels.repository';
 
+/** A feed of followed accounts reads at most this many of them: the most recently followed. */
+const MAX_FOLLOWEES = 5_000;
+
 /** The interface keeps reasons as plain strings; the schema stores the enum. Same values. */
 const REPORT_REASONS: Record<ReelReportReasonValue, ReelReportReason> = {
   spam: ReelReportReason.SPAM,
@@ -636,9 +639,10 @@ export class ReelsDbRepository implements ReelsRepository {
   }
 
   /**
-   * Originals only, from accounts the viewer follows. Excluded followees are filtered out of the
-   * id list up front, rather than combining `$in` and `$nin` on the same `creatorId` field, which
-   * a plain-object merge cannot express.
+   * Originals only, from accounts the viewer follows (FR-018): newest first, keyset paged, and
+   * ending. Excluded followees are removed from the id list up front, rather than combining `$in`
+   * and `$nin` on the same `creatorId` field, which a plain-object merge cannot express. Only the
+   * most recently followed `MAX_FOLLOWEES` accounts count, which bounds the id list.
    */
   async listFollowingFeed(params: {
     viewerId: string;
@@ -646,11 +650,14 @@ export class ReelsDbRepository implements ReelsRepository {
     limit: number;
     excludeCreatorIds: string[];
   }): Promise<Page<ReelRecord>> {
+    const position = decodeListCursor(params.cursor);
     const viewerObjectId = toObjectId(params.viewerId);
     if (!viewerObjectId) return { items: [], nextCursor: null };
 
     const follows = await this.followModel
       .find({ followerId: viewerObjectId })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(MAX_FOLLOWEES)
       .select({ followeeId: 1 })
       .lean<Array<{ followeeId: Types.ObjectId }>>()
       .exec();
@@ -660,25 +667,29 @@ export class ReelsDbRepository implements ReelsRepository {
       .filter((id) => !excludeSet.has(id.toString()));
     if (followeeIds.length === 0) return { items: [], nextCursor: null };
 
-    const offset = this.parseCursor(params.cursor);
-    const filter: Record<string, unknown> = {
-      creatorId: { $in: followeeIds },
-      ...this.visibilityFilter(params.viewerId),
-    };
-    const total = await this.reelModel.countDocuments(filter).exec();
-    if (total === 0) return { items: [], nextCursor: null };
+    const conditions: Record<string, unknown>[] = [
+      { creatorId: { $in: followeeIds }, status: ReelStatus.PUBLISHED },
+    ];
+    if (position) conditions.push(this.before(position));
 
     const docs = await this.reelModel
-      .find(filter)
+      .find({ $and: conditions })
       .sort({ createdAt: -1, _id: -1 })
-      .skip(offset)
-      .limit(params.limit)
+      .limit(params.limit + 1)
       .lean<ReelLean[]>()
       .exec();
-    const nextOffset = offset + params.limit;
+    const page = docs.slice(0, params.limit);
+    const last = page[page.length - 1];
     return {
-      items: await this.hydrate(docs, params.viewerId),
-      nextCursor: nextOffset < total ? String(nextOffset) : null,
+      items: await this.hydrate(page, params.viewerId),
+      nextCursor:
+        docs.length > params.limit && last
+          ? encodeFeedCursor({
+              pass: 0,
+              createdAt: last.createdAt ?? new Date(0),
+              id: last._id.toString(),
+            })
+          : null,
     };
   }
 
@@ -1024,15 +1035,19 @@ export class ReelsDbRepository implements ReelsRepository {
     // Others see only published videos in the grid; the owner sees their own reels in every
     // status, and the `status` field below lets the app render the Processing, Removed and
     // Under review badges.
-    const videos = await this.reelModel
-      .find({
-        creatorId: targetId,
-        ...(isSelf ? {} : { status: ReelStatus.PUBLISHED }),
-      })
-      .sort({ createdAt: -1, _id: -1 })
-      .select({ media: 1, status: 1 })
-      .lean<Array<Pick<ReelLean, '_id' | 'media' | 'status'>>>()
-      .exec();
+    // Only sellers publish, so a customer's grid is empty without asking.
+    const videos =
+      account.accountType === 'seller'
+        ? await this.reelModel
+            .find({
+              creatorId: targetId,
+              ...(isSelf ? {} : { status: ReelStatus.PUBLISHED }),
+            })
+            .sort({ createdAt: -1, _id: -1 })
+            .select({ media: 1, status: 1 })
+            .lean<Array<Pick<ReelLean, '_id' | 'media' | 'status'>>>()
+            .exec()
+        : [];
     const isFollowing = viewerObjectId
       ? Boolean(
           await this.followModel
@@ -1475,38 +1490,51 @@ export class ReelsDbRepository implements ReelsRepository {
     const viewerObjectId = toObjectId(params.viewerId);
     if (!viewerObjectId) return { items: [], nextCursor: null };
 
+    const position = decodeListCursor(params.cursor);
     const excludeIds = toObjectIds(params.excludeUserIds);
-    const filter: Record<string, unknown> = {
-      followerId: viewerObjectId,
-      ...(excludeIds.length > 0 ? { followeeId: { $nin: excludeIds } } : {}),
-    };
-
-    const offset = this.parseCursor(params.cursor);
-    const total = await this.followModel.countDocuments(filter).exec();
-    if (total === 0) return { items: [], nextCursor: null };
+    const conditions: Record<string, unknown>[] = [
+      {
+        followerId: viewerObjectId,
+        ...(excludeIds.length > 0 ? { followeeId: { $nin: excludeIds } } : {}),
+      },
+    ];
+    if (position) conditions.push(this.before(position));
 
     const follows = await this.followModel
-      .find(filter)
+      .find({ $and: conditions })
       .sort({ createdAt: -1, _id: -1 })
-      .skip(offset)
-      .limit(params.limit)
-      .lean<Array<{ followeeId: Types.ObjectId }>>()
+      .limit(params.limit + 1)
+      .lean<
+        Array<{
+          _id: Types.ObjectId;
+          followeeId: Types.ObjectId;
+          createdAt?: Date;
+        }>
+      >()
       .exec();
+    const page = follows.slice(0, params.limit);
+    const last = page[page.length - 1];
 
     const accounts = await this.accounts.findByIdsLean(
-      follows.map((f) => f.followeeId.toString()),
+      page.map((f) => f.followeeId.toString()),
       ['username', 'name', 'avatarUrl'],
     );
     const accountById = new Map(accounts.map((a) => [a._id.toString(), a]));
-    const items = follows
+    const items = page
       .map((f) => accountById.get(f.followeeId.toString()))
       .filter((account): account is NonNullable<typeof account> => !!account)
       .map(summaryOf);
 
-    const nextOffset = offset + params.limit;
     return {
       items,
-      nextCursor: nextOffset < total ? String(nextOffset) : null,
+      nextCursor:
+        follows.length > params.limit && last
+          ? encodeFeedCursor({
+              pass: 0,
+              createdAt: last.createdAt ?? new Date(0),
+              id: last._id.toString(),
+            })
+          : null,
     };
   }
 

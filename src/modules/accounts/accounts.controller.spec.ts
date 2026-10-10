@@ -36,4 +36,24 @@ describe('AccountsController', () => {
     )?.value as (...args: never[]) => unknown;
     expect(Reflect.getMetadata(ACCESS_KEY, handler)).toBe('signed-in');
   });
+
+  it('changes the handle and bio of the caller only (EP25), and needs a session', async () => {
+    const updateMe = jest
+      .fn<Promise<MeDto>, [string, { username?: string; bio?: string }]>()
+      .mockResolvedValue(me);
+    const controller = new AccountsController({
+      updateMe,
+    } as unknown as AccountsService);
+
+    await expect(
+      controller.updateMe(user({ userId: me.id }), { username: 'new.handle' }),
+    ).resolves.toBe(me);
+
+    expect(updateMe).toHaveBeenCalledWith(me.id, { username: 'new.handle' });
+    const handler = Object.getOwnPropertyDescriptor(
+      AccountsController.prototype,
+      'updateMe',
+    )?.value as (...args: never[]) => unknown;
+    expect(Reflect.getMetadata(ACCESS_KEY, handler)).toBe('signed-in');
+  });
 });

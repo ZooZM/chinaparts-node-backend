@@ -525,7 +525,7 @@ description: "Task list for the China Parts Reels Service"
 
 ### Tests for User Story 5 ⚠️
 
-- [ ] T075 [P] [US5] Write `test/e2e/profiles.e2e-spec.ts`.
+- [X] T075 [P] [US5] Write `test/e2e/profiles.e2e-spec.ts`.
   - **Seller profile**: EP27 for seller 1 shows `name` = the shop name, `accountType:'seller'`, and published reels newest first. Seller 1 viewing its own profile also sees non-published reels with their status.
   - **Customer profile**: has `videos:[]`.
   - **Follow**:
@@ -540,11 +540,11 @@ description: "Task list for the China Parts Reels Service"
 
 ### Implementation for User Story 5
 
-- [ ] T076 [US5] Create `src/modules/accounts/dto/update-me.dto.ts` (`username?` matching the R6 pattern, `bio?` up to 150 characters). Add EP25, `PATCH /api/users/me`, to `src/modules/accounts/accounts.controller.ts`. It carries `@Access('signed-in')`, standing applies through the global guard, and it calls `AccountsService.updateMe`.
-- [ ] T077 [US5] Update `getProfile` in `src/modules/reels/reels-db.repository.ts` and `CreatorProfileDto` in `src/modules/reels/reels.repository.ts`.
+- [X] T076 [US5] Create `src/modules/accounts/dto/update-me.dto.ts` (`username?` matching the R6 pattern, `bio?` up to 150 characters). Add EP25, `PATCH /api/users/me`, to `src/modules/accounts/accounts.controller.ts`. It carries `@Access('signed-in')`, standing applies through the global guard, and it calls `AccountsService.updateMe`.
+- [X] T077 [US5] Update `getProfile` in `src/modules/reels/reels-db.repository.ts` and `CreatorProfileDto` in `src/modules/reels/reels.repository.ts`.
   - **Changes**: add `user.accountType`, return `videos:[]` for customer accounts, and give non-owners `404 ACCOUNT_NOT_FOUND` when the profile's account is excluded.
   - **Unchanged**: the ported owner and non-owner status rules stay.
-- [ ] T078 [US5] Convert `getFollowingFeed` and `getFollowingUsers` (EP2, EP7) in `src/modules/reels/reels-db.repository.ts` to keyset paging, reusing `feed-cursor.ts`. The Following feed filters `creatorId $in followees`, capped at 5,000, and `$nin` the exclusion set.
+- [X] T078 [US5] Convert `getFollowingFeed` and `getFollowingUsers` (EP2, EP7) in `src/modules/reels/reels-db.repository.ts` to keyset paging, reusing `feed-cursor.ts`. The Following feed filters `creatorId $in followees`, capped at 5,000, and `$nin` the exclusion set.
 
 **Checkpoint**: The social graph works on China Parts identities.
 
