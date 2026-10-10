@@ -2,8 +2,6 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
-  HttpException,
-  HttpStatus,
   Inject,
   Injectable,
   NotFoundException,
@@ -16,7 +14,6 @@ import type {
 } from '../../common/http/viewer-request';
 import { normalizeForMatch } from '../../common/text/normalize-for-match';
 import { AccountsService } from '../accounts/accounts.service';
-import { StandingService } from '../accounts/standing.service';
 import {
   CommentsQueryDto,
   FeedQueryDto,
@@ -24,9 +21,12 @@ import {
 } from './dto/feed-query.dto';
 import { SearchQueryDto } from './dto/search-query.dto';
 import { HashtagStatsService } from './hashtags/hashtag-stats.service';
+import { CommentReportsRepository } from './comments/comment-reports.repository';
 import { ReelLifecycleService } from './lifecycle/reel-lifecycle.service';
 import { ReelPresenter } from './presentation/reel-presenter.service';
 import { ReelsNotificationsService } from './reels-notifications.service';
+import { ReportLimitService } from './reports/report-limit.service';
+import { ExclusionService } from './visibility/exclusion.service';
 import { REELS_REPOSITORY } from './reels.repository';
 import type {
   AdminHiddenReelDto,
@@ -40,7 +40,6 @@ import type {
   UserSearchResultDto,
 } from './reels.repository';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 /** Page size of the mention-suggestion list: not one of the FR-070 limits. */
 const FOLLOWING_USERS_PAGE = { default: 50, max: 100 };
 const ADMIN_PAGE = { default: 20, max: 50 };
@@ -55,31 +54,21 @@ export class ReelsService {
   constructor(
     @Inject(REELS_REPOSITORY) private readonly repository: ReelsRepository,
     private readonly accounts: AccountsService,
-    private readonly standing: StandingService,
+    private readonly exclusion: ExclusionService,
     private readonly presenter: ReelPresenter,
     private readonly lifecycle: ReelLifecycleService,
     private readonly notifications: ReelsNotificationsService,
     private readonly limits: LimitsService,
     private readonly hashtags: HashtagStatsService,
+    private readonly reportLimit: ReportLimitService,
+    private readonly commentReports: CommentReportsRepository,
   ) {}
 
   // ── Visibility ───────────────────────────────────────────────────────────
 
-  /**
-   * Everyone whose content this viewer must not see: the accounts they blocked, the accounts that
-   * blocked them (FR-047), and the accounts not in good standing (FR-009). Applied to every read.
-   *
-   * The viewer is always removed from it: an owner sees their own reels in every state, including
-   * while they are out of good standing. A signed-out visitor has only the standing set.
-   */
-  private async exclusionSet(viewerId: string): Promise<string[]> {
-    const [blocks, outOfStanding] = await Promise.all([
-      viewerId ? this.accounts.getBlockSet(viewerId) : Promise.resolve([]),
-      this.standing.members(),
-    ]);
-    const excluded = new Set<string>([...blocks, ...outOfStanding]);
-    excluded.delete(viewerId);
-    return [...excluded];
+  /** Everyone whose content this viewer must not see (FR-009, FR-047), applied to every read. */
+  private exclusionSet(viewerId: string): Promise<string[]> {
+    return this.exclusion.forViewer(viewerId);
   }
 
   private idOf(viewer: ViewerContext): string {
@@ -272,6 +261,8 @@ export class ReelsService {
         message: 'Only the owner can delete this reel',
       });
     }
+    // Reports are kept while their reel exists and go with it (research R16).
+    await this.commentReports.deleteByReel(id);
     await this.lifecycle.onDeleted(result);
     return { deleted: true };
   }
@@ -475,8 +466,8 @@ export class ReelsService {
   // ── Reporting and operator review ────────────────────────────────────────
 
   /**
-   * Reports a reel. The daily limit is checked here, in the service (FR-055), because the
-   * repository only counts. A report that reaches the auto-hide threshold hides the reel, and the
+   * Reports a reel. The daily limit (shared with comment reports, FR-055) is checked here, in the
+   * service, because the repository only counts. A report that reaches the auto-hide threshold hides the reel, and the
    * lifecycle takes its public files down (FR-056).
    */
   async reportReel(
@@ -484,19 +475,11 @@ export class ReelsService {
     id: string,
     dto: { reason: ReelReportReasonValue; customReason?: string },
   ): Promise<{ reported: true; alreadyReported: boolean }> {
-    const recent = await this.repository.countRecentReelReports(
-      user.userId,
-      new Date(Date.now() - DAY_MS),
-    );
-    if (recent >= this.limits.reportDailyLimit) {
-      throw new HttpException(
-        {
-          error: ErrorCode.REPORT_DAILY_LIMIT,
-          message: 'Daily report limit reached',
-        },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
+    // A repeat is a quiet success and is not counted against the limit; anything new is.
+    if (await this.repository.hasReportedReel(id, user.userId)) {
+      return { reported: true, alreadyReported: true };
     }
+    await this.reportLimit.assertWithinLimit(user.userId);
 
     const outcome = await this.repository.reportReel(
       id,

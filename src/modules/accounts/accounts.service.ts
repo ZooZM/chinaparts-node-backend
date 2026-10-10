@@ -133,6 +133,28 @@ export class AccountsService {
     }));
   }
 
+  /** The handle and type of each account, for listings an operator reads. Missing accounts are absent. */
+  async getAuthors(
+    ids: string[],
+  ): Promise<
+    Map<string, { id: string; username: string; accountType: AccountType }>
+  > {
+    const accounts = await this.accounts.findByIdsLean(ids, [
+      'username',
+      'accountType',
+    ]);
+    return new Map(
+      accounts.map((account) => [
+        account._id.toString(),
+        {
+          id: account._id.toString(),
+          username: account.username,
+          accountType: account.accountType,
+        },
+      ]),
+    );
+  }
+
   async recordLocale(userId: string, locale: Locale): Promise<void> {
     await this.accounts.updateLocale(userId, locale);
   }

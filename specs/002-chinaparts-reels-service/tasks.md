@@ -598,7 +598,7 @@ description: "Task list for the China Parts Reels Service"
 
 ### Tests for User Story 7 ⚠️
 
-- [ ] T084 [P] [US7] Write `test/e2e/moderation.e2e-spec.ts`.
+- [X] T084 [P] [US7] Write `test/e2e/moderation.e2e-spec.ts`.
   - **Reel reports**:
     - `other` without text, or with text over `REEL_REPORT_REASON_MAX_LENGTH`, gets `400 VALIDATION_FAILED`.
     - A duplicate report is a quiet success.
@@ -614,10 +614,10 @@ description: "Task list for the China Parts Reels Service"
 
 ### Implementation for User Story 7
 
-- [ ] T085 [US7] Create `src/modules/reels/schemas/reel-comment-report.schema.ts` (data-model.md "reel_comment_reports") and `src/modules/reels/comments/comment-reports.repository.ts`, extending `BaseRepository`.
+- [X] T085 [US7] Create `src/modules/reels/schemas/reel-comment-report.schema.ts` (data-model.md "reel_comment_reports") and `src/modules/reels/comments/comment-reports.repository.ts`, extending `BaseRepository`.
   - **Repository methods**: `countRecent(reporterId, since)`, `listOpenGrouped(cursor, limit)` with keyset paging on `lastReportedAt`, and `dismissOpen(commentId)`.
   - **Wiring**: register the schema. Add `deleteByReel(reelId)` and call it from `ReelsService.deleteReel` after the cascade, so comment reports go with their reel (R16).
-- [ ] T086 [US7] Implement `src/modules/reels/comments/comment-reports.service.ts` per R16 and R22.
+- [X] T086 [US7] Implement `src/modules/reels/comments/comment-reports.service.ts` per R16 and R22.
   - **`report(reelId, commentId, user, dto)`**:
     - The reel must be published and visible (`404 REEL_NOT_FOUND`), and the comment must exist and not be deleted (`404 COMMENT_NOT_FOUND`).
     - It must not be the user's own comment (`400 CANNOT_REPORT_OWN_COMMENT`). A duplicate is a quiet no-op.
@@ -626,13 +626,13 @@ description: "Task list for the China Parts Reels Service"
   - **`remove(commentId)`**: calls `CommentsService.deleteComment` with `{ operator: true }`.
   - **`dismiss(commentId)`**: sets `dismissedAt` on the open reports.
   - **Tests**: `comment-reports.service.spec.ts`.
-- [ ] T087 [US7] Move the reel-report limit into the service layer in `src/modules/reels/reels.service.ts`.
+- [X] T087 [US7] Move the reel-report limit into the service layer in `src/modules/reels/reels.service.ts`.
   - **Repository**: add `countRecentReelReports(reporterId, since)` to `reels-db.repository.ts`, and remove the limit check from its `reportReel`.
   - **Service**: `ReelsService.reportReel` enforces the same shared limit as T086, then calls the repository with the threshold. On a `hidden` outcome, it calls `ReelLifecycleService.onUnpublished`.
   - **Admin restore**: confirm that `adminModerateReel` restore and reject run `onRestored` and `onUnpublished`.
   - **Request**: `dto/report-reel.dto.ts` validates `customReason` with `@MaxLengthFromConfig('REEL_REPORT_REASON_MAX_LENGTH')`. EP19 gets `@RateLimitClass('write')`.
   - **Tests**: update `reels.service.spec.ts`.
-- [ ] T088 [US7] Add the comment-report routes and DTOs in `src/modules/reels/reels.controller.ts` and `src/modules/reels/reels-admin.controller.ts`.
+- [X] T088 [US7] Add the comment-report routes and DTOs in `src/modules/reels/reels.controller.ts` and `src/modules/reels/reels-admin.controller.ts`.
   - **EP23**: `POST /api/reels/:id/comments/:commentId/report` in `src/modules/reels/reels.controller.ts`, with `@Access('signed-in')` and `@RateLimitClass('write')`, reusing `dto/report-reel.dto.ts`.
   - **EP31 and EP32**: `GET /api/reels/moderation/comments` and `PATCH /api/reels/comments/:commentId/moderation` in `src/modules/reels/reels-admin.controller.ts`, which carries `@Access('admin')`. Add `dto/admin-comment-moderation.dto.ts` (`action: 'remove'|'dismiss'`), and declare the static routes before the `:id` routes.
 

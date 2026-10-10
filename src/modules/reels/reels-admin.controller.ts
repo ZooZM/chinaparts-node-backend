@@ -1,4 +1,13 @@
 import { Body, Controller, Get, Param, Patch, Query } from '@nestjs/common';
+import {
+  CommentQueueItem,
+  CommentReportsService,
+} from './comments/comment-reports.service';
+import {
+  AdminCommentAction,
+  AdminCommentModerationDto,
+  AdminCommentQueueQueryDto,
+} from './dto/admin-comment-moderation.dto';
 import { Access } from '../../common/guards/access.decorator';
 import { AdminHiddenQueryDto } from './dto/admin-hidden-query.dto';
 import { AdminModerationDto } from './dto/admin-moderation.dto';
@@ -14,7 +23,10 @@ import type { AdminHiddenReelDto, Page } from './reels.repository';
 @Controller('api/reels')
 @Access('admin')
 export class ReelsAdminController {
-  constructor(private readonly reelsService: ReelsService) {}
+  constructor(
+    private readonly reelsService: ReelsService,
+    private readonly commentReports: CommentReportsService,
+  ) {}
 
   // Two path segments, so it never collides with `GET /api/reels/:id` in ReelsController.
   @Get('moderation/hidden')
@@ -30,5 +42,27 @@ export class ReelsAdminController {
     @Body() dto: AdminModerationDto,
   ): Promise<{ id: string; status: string }> {
     return this.reelsService.adminModerateReel(id, dto.action);
+  }
+
+  // Comments with open reports, most recently reported first (EP31).
+  @Get('moderation/comments')
+  listReportedComments(
+    @Query() query: AdminCommentQueueQueryDto,
+  ): Promise<Page<CommentQueueItem>> {
+    return this.commentReports.listQueue({
+      cursor: query.cursor,
+      limit: query.limit ?? 20,
+    });
+  }
+
+  // Three path segments, so it never meets `PATCH :id/moderation` above (EP32).
+  @Patch('comments/:commentId/moderation')
+  moderateComment(
+    @Param('commentId') commentId: string,
+    @Body() dto: AdminCommentModerationDto,
+  ): Promise<{ id: string; action: 'remove' | 'dismiss' }> {
+    return dto.action === AdminCommentAction.REMOVE
+      ? this.commentReports.remove(commentId)
+      : this.commentReports.dismiss(commentId);
   }
 }

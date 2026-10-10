@@ -19,8 +19,11 @@ import {
 } from './hashtags/hashtag-stats.schema';
 import { HashtagStatsService } from './hashtags/hashtag-stats.service';
 import { MediaVisibilityProcessor } from './lifecycle/media-visibility.processor';
+import { CommentReportsRepository } from './comments/comment-reports.repository';
+import { CommentReportsService } from './comments/comment-reports.service';
 import { CommentsRepository } from './comments/comments.repository';
 import { CommentsService } from './comments/comments.service';
+import { ExclusionService } from './visibility/exclusion.service';
 import { ReelLifecycleService } from './lifecycle/reel-lifecycle.service';
 import { MediaUrlService } from './media/media-url.service';
 import { ReelMediaService } from './media/reel-media.service';
@@ -40,6 +43,7 @@ import { ReelsModerationService } from './reels-moderation.service';
 import { ReelsNotificationsService } from './reels-notifications.service';
 import { ReelsRedirectController } from './reels-redirect.controller';
 import { ReelsSeedService } from './reels-seed.service';
+import { ReportLimitService } from './reports/report-limit.service';
 import { ReelsUsersController } from './reels-users.controller';
 import { ReelsController } from './reels.controller';
 import { REELS_REPOSITORY } from './reels.repository';
@@ -49,6 +53,10 @@ import {
   NotificationEvent,
   NotificationEventSchema,
 } from './schemas/notification-event.schema';
+import {
+  ReelCommentReport,
+  ReelCommentReportSchema,
+} from './schemas/reel-comment-report.schema';
 import { ReelComment, ReelCommentSchema } from './schemas/reel-comment.schema';
 import {
   ReelGuestView,
@@ -76,6 +84,7 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
       { name: ReelGuestView.name, schema: ReelGuestViewSchema },
       { name: ReelShare.name, schema: ReelShareSchema },
       { name: ReelComment.name, schema: ReelCommentSchema },
+      { name: ReelCommentReport.name, schema: ReelCommentReportSchema },
       { name: ReelReport.name, schema: ReelReportSchema },
       { name: ReelRepost.name, schema: ReelRepostSchema },
       { name: ReelProductTap.name, schema: ReelProductTapSchema },
@@ -99,10 +108,12 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
     }),
   ],
   controllers: [
+    // First, so the operator's static routes (`moderation/comments`) are matched before
+    // `GET :id/comments` could take `moderation` for a reel id.
+    ReelsAdminController,
     ReelsController,
     ReelsUsersController,
     ReelsRedirectController,
-    ReelsAdminController,
   ],
   providers: [
     ReelsService,
@@ -111,6 +122,10 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
     NotificationEventsRepository,
     CommentsRepository,
     CommentsService,
+    CommentReportsRepository,
+    CommentReportsService,
+    ReportLimitService,
+    ExclusionService,
     HashtagStatsRepository,
     HashtagStatsService,
     ProductLinksService,

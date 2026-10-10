@@ -312,6 +312,9 @@ export interface ReelsRepository {
     excludeCreatorIds: string[];
   }): Promise<'recorded' | 'not_linked' | null>;
 
+  /** Whether this account has already reported this reel. */
+  hasReportedReel(reelId: string, reporterId: string): Promise<boolean>;
+
   /** Moves a reel's stored comment count, never below zero. The counter follows the relation write. */
   adjustCommentsCount(id: string, delta: number): Promise<void>;
 

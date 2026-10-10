@@ -66,7 +66,7 @@ Out of good standing, any other write gets `403 ACCOUNT_NOT_IN_GOOD_STANDING`.
 | 20 | `GET /api/reels/:id/comments?cursor&limit` | Optional | Excludes deleted comments, comments from accounts not in good standing, and blocked authors |
 | 21 | `POST /api/reels/:id/comments` | Signed-in | Body `{ text }` |
 | 22 | `DELETE /api/reels/:id/comments/:commentId` | Signed-in | **New**. Allowed for the comment's author, even out of good standing, or the reel's creator, who needs good standing (FR-008). Otherwise `403 COMMENT_NOT_DELETABLE` |
-| 23 | `POST /api/reels/:id/comments/:commentId/report` | Signed-in | **New**. Body `{ reason, customReason? }`. Reporting your own comment gets 400. A repeat report quietly succeeds |
+| 23 | `POST /api/reels/:id/comments/:commentId/report` | Signed-in | **New**. Body `{ reason, customReason? }`. Reporting your own comment gets `400 CANNOT_REPORT_OWN_COMMENT`. A repeat report quietly succeeds (`alreadyReported: true`) and is not counted. Shares the daily limit with EP19 (`429 REPORT_DAILY_LIMIT`) |
 
 ### Accounts
 
@@ -85,7 +85,7 @@ Out of good standing, any other write gets `403 ACCOUNT_NOT_IN_GOOD_STANDING`.
 | 29 | `GET /api/reels/moderation/hidden?cursor&limit` | Admin | Ported |
 | 30 | `PATCH /api/reels/:id/moderation` | Admin | Body `{ action: 'restore' \| 'reject' }`. Ported |
 | 31 | `GET /api/reels/moderation/comments?cursor&limit` | Admin | **New**. Comments with open reports, most recently reported first |
-| 32 | `PATCH /api/reels/comments/:commentId/moderation` | Admin | **New**. Body `{ action: 'remove' \| 'dismiss' }` |
+| 32 | `PATCH /api/reels/comments/:commentId/moderation` | Admin | **New**. Body `{ action: 'remove' \| 'dismiss' }`. Answers `{ id, action }`. `remove` soft-deletes the comment and takes the reel's count down once; `dismiss` closes the open reports and keeps the comment. A comment that is missing or already deleted is `404 COMMENT_NOT_FOUND` |
 
 ### Non-API routes (Public)
 

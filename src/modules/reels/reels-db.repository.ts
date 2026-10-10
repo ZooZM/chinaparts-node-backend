@@ -981,6 +981,15 @@ export class ReelsDbRepository implements ReelsRepository {
     return 'recorded';
   }
 
+  async hasReportedReel(reelId: string, reporterId: string): Promise<boolean> {
+    const videoId = toObjectId(reelId);
+    const reporter = toObjectId(reporterId);
+    if (!videoId || !reporter) return false;
+    return Boolean(
+      await this.reportModel.exists({ videoId, reporterId: reporter }).exec(),
+    );
+  }
+
   async adjustCommentsCount(id: string, delta: number): Promise<void> {
     const videoId = toObjectId(id);
     if (!videoId || delta === 0) return;

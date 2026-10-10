@@ -21,6 +21,7 @@ import type {
   ViewerContext,
 } from '../../common/http/viewer-request';
 import { CurrentUser, Viewer } from '../../common/http/viewer.decorator';
+import { CommentReportsService } from './comments/comment-reports.service';
 import { CommentsService } from './comments/comments.service';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { CreateReelDto } from './dto/create-reel.dto';
@@ -61,6 +62,7 @@ export class ReelsController {
     private readonly reelsService: ReelsService,
     private readonly uploadService: ReelUploadService,
     private readonly commentsService: CommentsService,
+    private readonly commentReports: CommentReportsService,
     private readonly productLinks: ProductLinksService,
   ) {}
 
@@ -229,6 +231,19 @@ export class ReelsController {
     @Param('commentId') commentId: string,
   ): Promise<{ deleted: true }> {
     return this.commentsService.deleteComment(id, commentId, { user });
+  }
+
+  // Report a comment: the same reasons as a reel, and the same daily limit (FR-055).
+  @Post(':id/comments/:commentId/report')
+  @Access('signed-in')
+  @RateLimitClass('write')
+  reportComment(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Param('commentId') commentId: string,
+    @Body() dto: ReportReelDto,
+  ): Promise<{ reported: true; alreadyReported: boolean }> {
+    return this.commentReports.report(id, commentId, user, dto);
   }
 
   @Post(':id/share')

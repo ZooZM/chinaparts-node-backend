@@ -34,6 +34,24 @@ export class CommentsRepository extends BaseRepository<ReelCommentDocument> {
     return comment ? { authorId: comment.authorId.toString() } : null;
   }
 
+  /** A comment that has not been deleted, found by its id alone (the operator's route has no reel). */
+  async findActiveById(
+    commentId: string,
+  ): Promise<{ reelId: string; authorId: string } | null> {
+    if (!Types.ObjectId.isValid(commentId)) return null;
+    const comment = await this.model
+      .findOne({ _id: new Types.ObjectId(commentId), deletedAt: null })
+      .select({ videoId: 1, authorId: 1 })
+      .lean<{ videoId: Types.ObjectId; authorId: Types.ObjectId }>()
+      .exec();
+    return comment
+      ? {
+          reelId: comment.videoId.toString(),
+          authorId: comment.authorId.toString(),
+        }
+      : null;
+  }
+
   /**
    * Soft-deletes the comment, and says whether this call was the one that did it. The filter
    * requires `deletedAt: null`, so of any number of simultaneous deletes exactly one matches. The

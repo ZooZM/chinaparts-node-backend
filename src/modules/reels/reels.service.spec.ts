@@ -9,7 +9,10 @@ import { LimitsService } from '../../common/config/limits';
 import type { AuthenticatedUser } from '../../common/http/viewer-request';
 import { AccountsService } from '../accounts/accounts.service';
 import { StandingService } from '../accounts/standing.service';
+import type { CommentReportsRepository } from './comments/comment-reports.repository';
 import type { HashtagStatsService } from './hashtags/hashtag-stats.service';
+import { ReportLimitService } from './reports/report-limit.service';
+import { ExclusionService } from './visibility/exclusion.service';
 import { ReelLifecycleService } from './lifecycle/reel-lifecycle.service';
 import { ReelPresenter } from './presentation/reel-presenter.service';
 import { ReelsNotificationsService } from './reels-notifications.service';
@@ -94,6 +97,7 @@ function setup() {
     deleteReelCascade: fn(),
     reportReel: fn(),
     countRecentReelReports: fn().mockResolvedValue(0),
+    hasReportedReel: fn().mockResolvedValue(false),
     getSnapshot: fn(),
     listHiddenReels: fn().mockResolvedValue({ items: [], nextCursor: null }),
     adminModerateReel: fn(),
@@ -135,15 +139,29 @@ function setup() {
     get: (key: string) => LIMIT_VALUES[key],
   } as never);
 
+  const commentReports = {
+    countRecent: jest.fn().mockResolvedValue(0),
+    deleteByReel: jest.fn().mockResolvedValue(undefined),
+  };
+
   const service = new ReelsService(
     repository as unknown as ReelsRepository,
     accounts as unknown as AccountsService,
-    standing as unknown as StandingService,
+    new ExclusionService(
+      accounts as unknown as AccountsService,
+      standing as unknown as StandingService,
+    ),
     presenter as unknown as ReelPresenter,
     lifecycle as unknown as ReelLifecycleService,
     notifications as unknown as ReelsNotificationsService,
     limits,
     hashtags as unknown as HashtagStatsService,
+    new ReportLimitService(
+      repository as unknown as ReelsRepository,
+      commentReports as unknown as CommentReportsRepository,
+      limits,
+    ),
+    commentReports as unknown as CommentReportsRepository,
   );
   return {
     service,
@@ -154,6 +172,7 @@ function setup() {
     lifecycle,
     notifications,
     hashtags,
+    commentReports,
   };
 }
 
@@ -506,6 +525,25 @@ describe('ReelsService', () => {
       expect(lifecycle.onDeleted).toHaveBeenCalledWith(deleted);
     });
 
+    it('deletes the comment reports with the reel, before its files go (research R16)', async () => {
+      const { service, repository, commentReports, lifecycle } = setup();
+      repository.deleteReelCascade.mockResolvedValue({ id: reelId });
+      const order: string[] = [];
+      commentReports.deleteByReel.mockImplementation(() => {
+        order.push('reports');
+        return Promise.resolve();
+      });
+      lifecycle.onDeleted.mockImplementation(() => {
+        order.push('files');
+        return Promise.resolve();
+      });
+
+      await service.deleteReel(me, reelId);
+
+      expect(commentReports.deleteByReel).toHaveBeenCalledWith(reelId);
+      expect(order).toEqual(['reports', 'files']);
+    });
+
     it('is a 404 for an unknown reel, and touches no media', async () => {
       const { service, repository, lifecycle } = setup();
       repository.deleteReelCascade.mockResolvedValue(null);
@@ -635,6 +673,33 @@ describe('ReelsService', () => {
       expect(before - since.getTime()).toBeLessThan(
         24 * 60 * 60 * 1000 + 5_000,
       );
+    });
+
+    it('shares the limit with comment reports: both kinds count together (FR-055)', async () => {
+      const { service, repository, commentReports } = setup();
+      repository.countRecentReelReports.mockResolvedValue(12);
+      commentReports.countRecent.mockResolvedValue(8);
+
+      const error = await service
+        .reportReel(me, reelId, dto)
+        .catch((e: unknown) => e);
+
+      expect((error as HttpException).getStatus()).toBe(429);
+      expect(repository.reportReel).not.toHaveBeenCalled();
+    });
+
+    it('treats a repeat as a quiet success even at the limit, without counting or recording it', async () => {
+      const { service, repository } = setup();
+      repository.hasReportedReel.mockResolvedValue(true);
+      repository.countRecentReelReports.mockResolvedValue(20);
+
+      await expect(service.reportReel(me, reelId, dto)).resolves.toEqual({
+        reported: true,
+        alreadyReported: true,
+      });
+
+      expect(repository.reportReel).not.toHaveBeenCalled();
+      expect(repository.countRecentReelReports).not.toHaveBeenCalled();
     });
 
     it('allows a report one below the limit', async () => {
