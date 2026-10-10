@@ -113,7 +113,7 @@ async function openRoot(
   user: string,
   password: string,
 ): Promise<Connection> {
-  return createConnection({
+  const connection = await createConnection({
     host,
     port,
     user,
@@ -121,6 +121,9 @@ async function openRoot(
     multipleStatements: true,
     charset: 'utf8mb4',
   });
+  // Fixtures and tests write timestamps as UTC wall-clock times, whatever zone the server is in.
+  await connection.query("SET time_zone = '+00:00'");
+  return connection;
 }
 
 export async function startInfra(): Promise<TestInfra> {
@@ -201,10 +204,7 @@ export async function startInfra(): Promise<TestInfra> {
       ...READ_ONLY_USER,
     },
     redisUrl,
-    async rootQuery<T = unknown>(
-      sql: string,
-      params?: unknown[],
-    ): Promise<T> {
+    async rootQuery<T = unknown>(sql: string, params?: unknown[]): Promise<T> {
       try {
         const [rows] = await root.query(sql, params);
         return rows as T;

@@ -65,13 +65,23 @@ export interface ReelDto {
   viewerSaved: boolean;
   // v4 (FR-076): non-null only on For You repost-injected items (and v6
   // profile Reposts-list items). The primary/most-recent relevant reposter.
-  repostedBy: { id: string; username: string; name: string; avatarUrl: string } | null;
+  repostedBy: {
+    id: string;
+    username: string;
+    name: string;
+    avatarUrl: string;
+  } | null;
   // v6: viewer-relevant reposters (people the viewer follows, ∪ the viewer),
   // driving the multi-reposter badge — `repostersCount` is the total of that
   // relevant set, `topReposters` are up to 3 of them (most-recent-first) for
   // the stacked-avatar display. Both 0/[] on surfaces without repost context.
   repostersCount: number;
-  topReposters: { id: string; username: string; name: string; avatarUrl: string }[];
+  topReposters: {
+    id: string;
+    username: string;
+    name: string;
+    avatarUrl: string;
+  }[];
   // v4 (FR-073): drives the action-column Repost button's active state —
   // true whenever the CALLER (not just any followee) has reposted this reel.
   viewerReposted: boolean;
@@ -126,11 +136,7 @@ export interface FollowedUserDto {
  * as a plain union here so this abstract-contract file stays free of any
  * Mongoose/schema import (consistent with the rest of the file). */
 export type ReelReportReasonValue =
-  | 'spam'
-  | 'nudity'
-  | 'violence'
-  | 'hate_speech'
-  | 'other';
+  'spam' | 'nudity' | 'violence' | 'hate_speech' | 'other';
 
 /** v4 (FR-071): one entry in a report-hidden reel's audit trail. */
 export interface AdminReportSummary {
@@ -301,7 +307,12 @@ export interface ReelsRepository {
    */
   listReposters(
     reelId: string,
-    params: { viewerId: string; cursor?: string; limit: number; excludeUserIds: string[] },
+    params: {
+      viewerId: string;
+      cursor?: string;
+      limit: number;
+      excludeUserIds: string[];
+    },
   ): Promise<{ items: FollowedUserDto[]; nextCursor: string | null } | null>;
 
   /**
@@ -314,7 +325,9 @@ export interface ReelsRepository {
     id: string,
     viewerId: string,
   ): Promise<
-    { deleted: true; videoUrl: string; thumbnailUrl: string } | 'forbidden' | null
+    | { deleted: true; videoUrl: string; thumbnailUrl: string }
+    | 'forbidden'
+    | null
   >;
 
   /**
@@ -335,7 +348,10 @@ export interface ReelsRepository {
     reason: ReelReportReasonValue,
     customReason: string | undefined,
   ): Promise<
-    { reported: true; alreadyReported: boolean } | 'self' | 'rate_limited' | null
+    | { reported: true; alreadyReported: boolean }
+    | 'self'
+    | 'rate_limited'
+    | null
   >;
 
   /**
@@ -380,12 +396,18 @@ export interface ReelsRepository {
    * `'self'` when the caller is the reel's creator (no self-repost); `null`
    * when the reel is unknown/non-published.
    */
-  repostReel(id: string, viewerId: string): Promise<{ reposted: true } | 'self' | null>;
+  repostReel(
+    id: string,
+    viewerId: string,
+  ): Promise<{ reposted: true } | 'self' | null>;
 
   /**
    * v4 (FR-073): explicit un-repost — idempotent no-op if no repost
    * existed. `null` only when the reel itself is unknown (not tied to
    * publication status — an owner can always remove their own repost).
    */
-  unrepostReel(id: string, viewerId: string): Promise<{ reposted: false } | null>;
+  unrepostReel(
+    id: string,
+    viewerId: string,
+  ): Promise<{ reposted: false } | null>;
 }

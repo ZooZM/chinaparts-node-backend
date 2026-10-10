@@ -1,44 +1,44 @@
 import {
+  CallHandler,
+  ExecutionContext,
   Injectable,
   NestInterceptor,
-  ExecutionContext,
-  CallHandler,
 } from '@nestjs/common';
 import { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
 
+/** `{ success, data, message }` (constitution IV). */
 export interface StandardResponse<T> {
   success: boolean;
   data: T;
   message: string;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 @Injectable()
-export class GlobalResponseInterceptor<T> implements NestInterceptor<
-  T,
-  StandardResponse<T>
+export class GlobalResponseInterceptor implements NestInterceptor<
+  unknown,
+  StandardResponse<unknown>
 > {
   intercept(
-    context: ExecutionContext,
-    next: CallHandler,
-  ): Observable<StandardResponse<T>> {
+    _context: ExecutionContext,
+    next: CallHandler<unknown>,
+  ): Observable<StandardResponse<unknown>> {
     return next.handle().pipe(
-      map((data) => {
-        // If the service/controller returns an object with a message, use it; else default.
-        const returnedMessage =
-          typeof data === 'object' && data !== null && 'message' in data
-            ? data.message
+      map((payload) => {
+        // A handler may return `{ data, message }` to control both parts of the envelope;
+        // otherwise the whole payload is the data and the message is the default.
+        const message =
+          isRecord(payload) && typeof payload.message === 'string'
+            ? payload.message
             : 'Request successful';
-        const returnedData =
-          typeof data === 'object' && data !== null && 'data' in data
-            ? data.data
-            : data;
+        const data =
+          isRecord(payload) && 'data' in payload ? payload.data : payload;
 
-        return {
-          success: true,
-          message: returnedMessage,
-          data: returnedData,
-        };
+        return { success: true, message, data };
       }),
     );
   }

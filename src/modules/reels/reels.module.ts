@@ -16,7 +16,10 @@ import { REELS_REPOSITORY } from './reels.repository';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { Reel, ReelSchema } from './schemas/reel.schema';
-import { REELS_MODERATION_QUEUE, ReelsModerationProcessor } from './reels-moderation.processor';
+import {
+  REELS_MODERATION_QUEUE,
+  ReelsModerationProcessor,
+} from './reels-moderation.processor';
 import { ReelsModerationService } from './reels-moderation.service';
 import { MODERATION_PROVIDER } from './moderation/moderation-provider';
 import { StubModerationProvider } from './moderation/stub.provider';
@@ -79,7 +82,11 @@ import {
     // for the real provider. Swapping providers later is a new class here.
     {
       provide: MODERATION_PROVIDER,
-      inject: [ConfigService, SightengineModerationProvider, StubModerationProvider],
+      inject: [
+        ConfigService,
+        SightengineModerationProvider,
+        StubModerationProvider,
+      ],
       useFactory: (
         config: ConfigService,
         sightengine: SightengineModerationProvider,

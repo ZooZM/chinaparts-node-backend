@@ -15,7 +15,10 @@ import { Model, Types } from 'mongoose';
 import { Queue } from 'bullmq';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { REELS_REPOSITORY } from './reels.repository';
-import type { ReelReportReasonValue, ReelsRepository } from './reels.repository';
+import type {
+  ReelReportReasonValue,
+  ReelsRepository,
+} from './reels.repository';
 import {
   FeedQueryDto,
   CommentsQueryDto,

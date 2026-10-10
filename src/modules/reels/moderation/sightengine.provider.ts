@@ -4,10 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { createReadStream } from 'fs';
 import FormData from 'form-data';
-import {
-  ModerationProvider,
-  ModerationVerdict,
-} from './moderation-provider';
+import { ModerationProvider, ModerationVerdict } from './moderation-provider';
 
 /**
  * v3 (FR-062, R15): calls Sightengine's video and text moderation APIs
@@ -39,9 +36,7 @@ export class SightengineModerationProvider implements ModerationProvider {
     description: string,
   ): Promise<ModerationVerdict> {
     const apiUser = this.configService.get<string>('SIGHTENGINE_API_USER');
-    const apiSecret = this.configService.get<string>(
-      'SIGHTENGINE_API_SECRET',
-    );
+    const apiSecret = this.configService.get<string>('SIGHTENGINE_API_SECRET');
     if (!apiUser || !apiSecret) {
       throw new Error(
         'SIGHTENGINE_API_USER/SIGHTENGINE_API_SECRET are not configured',
@@ -50,7 +45,9 @@ export class SightengineModerationProvider implements ModerationProvider {
 
     const videoFlagged = await this.checkVideo(videoPath, apiUser, apiSecret);
     if (videoFlagged) {
-      this.logger.log(`Video flagged by Sightengine: ${videoFlagged.join(', ')}`);
+      this.logger.log(
+        `Video flagged by Sightengine: ${videoFlagged.join(', ')}`,
+      );
       return {
         verdict: 'flagged',
         flaggedSource: 'video',
@@ -60,13 +57,11 @@ export class SightengineModerationProvider implements ModerationProvider {
     }
 
     if (description.trim().length > 0) {
-      const textFlagged = await this.checkText(
-        description,
-        apiUser,
-        apiSecret,
-      );
+      const textFlagged = await this.checkText(description, apiUser, apiSecret);
       if (textFlagged) {
-        this.logger.log(`Description flagged by Sightengine: ${textFlagged.join(', ')}`);
+        this.logger.log(
+          `Description flagged by Sightengine: ${textFlagged.join(', ')}`,
+        );
         return {
           verdict: 'flagged',
           flaggedSource: 'description',

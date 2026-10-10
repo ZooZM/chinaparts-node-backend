@@ -114,7 +114,7 @@ describe('ReelsService', () => {
       });
       repository.listFeed.mockResolvedValue({ items: [], nextCursor: null });
 
-      await service.getFeed(viewerId, { limit: 10 } as never);
+      await service.getFeed(viewerId, { limit: 10 });
 
       // jest.fn() properties and Jest's asymmetric matchers are not
       // `this`-bound / are typed `any` by design — both are known
@@ -285,16 +285,16 @@ describe('ReelsService', () => {
 
     it('throws NotFoundException for an unknown reel', async () => {
       repository.deleteReel.mockResolvedValue(null);
-      await expect(
-        service.deleteReel(reelId, viewerId),
-      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(service.deleteReel(reelId, viewerId)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
     });
 
     it('throws ForbiddenException when the caller is not the owner', async () => {
       repository.deleteReel.mockResolvedValue('forbidden');
-      await expect(
-        service.deleteReel(reelId, otherId),
-      ).rejects.toBeInstanceOf(ForbiddenException);
+      await expect(service.deleteReel(reelId, otherId)).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
     });
   });
 
@@ -428,9 +428,7 @@ describe('ReelsService', () => {
     // v5 (FR-084): mention-suggestion source.
     it('getFollowingUsers defaults to limit 50 and forwards the block set + repository page', async () => {
       const page = {
-        items: [
-          { id: otherId, username: 'sara', name: 'Sara', avatarUrl: '' },
-        ],
+        items: [{ id: otherId, username: 'sara', name: 'Sara', avatarUrl: '' }],
         nextCursor: null,
       };
       repository.getFollowingUsers.mockResolvedValue(page);
@@ -464,7 +462,10 @@ describe('ReelsService', () => {
     });
 
     it('getReposted defaults the target to the caller when userId is omitted', async () => {
-      repository.listReposted.mockResolvedValue({ items: [], nextCursor: null });
+      repository.listReposted.mockResolvedValue({
+        items: [],
+        nextCursor: null,
+      });
       await service.getReposted(viewerId, {});
       expect(repository.listReposted).toHaveBeenCalledWith(
         viewerId,
@@ -487,9 +488,9 @@ describe('ReelsService', () => {
 
     it('getReposters throws NotFound when the reel is unknown/not visible', async () => {
       repository.listReposters.mockResolvedValue(null);
-      await expect(service.getReposters(viewerId, reelId, {})).rejects.toBeInstanceOf(
-        NotFoundException,
-      );
+      await expect(
+        service.getReposters(viewerId, reelId, {}),
+      ).rejects.toBeInstanceOf(NotFoundException);
     });
   });
 });

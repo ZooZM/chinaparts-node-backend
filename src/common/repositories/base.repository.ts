@@ -1,46 +1,59 @@
-import { Model, Document } from 'mongoose';
+import {
+  Document,
+  Model,
+  ProjectionType,
+  QueryFilter,
+  QueryOptions,
+  UpdateQuery,
+  UpdateResult,
+} from 'mongoose';
 
+/**
+ * Generic data access for one Mongoose model (constitution II): the only layer permitted to
+ * touch a `Model`. Feature repositories extend it and add their own query methods, using
+ * `.lean()` and a projection whenever a hydrated document is not needed (constitution VI).
+ */
 export abstract class BaseRepository<T extends Document> {
   constructor(protected readonly model: Model<T>) {}
 
-  async create(createEntityData: unknown): Promise<T> {
+  async create(createEntityData: Partial<T>): Promise<T> {
     const entity = new this.model(createEntityData);
-    return await entity.save();
+    return entity.save();
   }
 
   async findOne(
-    filterQuery: Record<string, any>,
-    projection?: any,
+    filterQuery: QueryFilter<T>,
+    projection?: ProjectionType<T>,
   ): Promise<T | null> {
     return this.model.findOne(filterQuery, projection).exec();
   }
 
   async findOneAndUpdate(
-    filterQuery: Record<string, any>,
-    updateQuery: Record<string, any>,
-    options?: any,
+    filterQuery: QueryFilter<T>,
+    updateQuery: UpdateQuery<T>,
+    options?: QueryOptions<T>,
   ): Promise<T | null> {
     return this.model
       .findOneAndUpdate(filterQuery, updateQuery, {
         new: true,
         ...options,
       })
-      .exec() as unknown as Promise<T | null>;
+      .exec();
   }
 
   async find(
-    filterQuery: Record<string, any>,
-    projection?: any,
-    options?: any,
+    filterQuery: QueryFilter<T>,
+    projection?: ProjectionType<T>,
+    options?: QueryOptions<T>,
   ): Promise<T[]> {
     return this.model.find(filterQuery, projection, options).exec();
   }
 
   async updateOne(
-    filterQuery: Record<string, any>,
-    updateQuery: Record<string, any>,
-    options?: any,
-  ) {
+    filterQuery: QueryFilter<T>,
+    updateQuery: UpdateQuery<T>,
+    options?: Parameters<Model<T>['updateOne']>[2],
+  ): Promise<UpdateResult> {
     return this.model.updateOne(filterQuery, updateQuery, options).exec();
   }
 }

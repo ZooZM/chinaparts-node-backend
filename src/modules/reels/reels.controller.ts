@@ -136,7 +136,9 @@ export class ReelsController {
             cb(null, true);
           } else {
             cb(
-              new BadRequestException(`Unsupported file type: ${file.mimetype}`),
+              new BadRequestException(
+                `Unsupported file type: ${file.mimetype}`,
+              ),
               false,
             );
           }

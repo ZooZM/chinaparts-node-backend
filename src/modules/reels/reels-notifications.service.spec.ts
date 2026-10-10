@@ -45,8 +45,8 @@ describe('ReelsNotificationsService', () => {
     service = new ReelsNotificationsService(
       eventModel as never,
       userModel as never,
-      pushService as never,
-      deviceTokens as never,
+      pushService,
+      deviceTokens,
     );
   });
 

@@ -100,21 +100,21 @@ description: "Task list for the China Parts Reels Service"
   - the global `GlobalResponseInterceptor` and `GlobalExceptionFilter`
   - `app.set('trust proxy', 1)`
   - **no** static `/uploads` route, because media comes from object storage (R12)
-- [ ] T011 [P] Create `src/common/errors/error-codes.ts`, exporting every sentinel in the contracts/rest-api.md "Error sentinels" table as `const enum ErrorCode`.
+- [X] T011 [P] Create `src/common/errors/error-codes.ts`, exporting every sentinel in the contracts/rest-api.md "Error sentinels" table as `const enum ErrorCode`.
   - **Filter**: update `src/common/filters/global-exception.filter.ts`. An `HttpException` whose response contains `{ error: <sentinel> }` produces `{ success:false, error, message, statusCode }`. Anything that isn't an `HttpException` produces `500 INTERNAL_ERROR` with a generic message, and its stack is logged server-side only. Remove the ported `any` casts.
   - **Tests**: add `src/common/filters/global-exception.filter.spec.ts`.
-- [ ] T012 [P] Implement the configurable limits per R24 in `src/common/config/limits.ts` and `src/common/validation/max-length-from-config.ts`.
+- [X] T012 [P] Implement the configurable limits per R24 in `src/common/config/limits.ts` and `src/common/validation/max-length-from-config.ts`.
   - **`src/common/config/limits.ts`**: a `LimitsService` exposing every R24 limit as typed numbers, plus `clampPageSize(kind: 'feed'|'comments', requested?: number): number`, which returns `min(requested ?? default, max)`.
   - **`src/common/validation/max-length-from-config.ts`**: a class-validator constraint `@MaxLengthFromConfig('<VARIABLE>')` that injects `ConfigService` and measures the trimmed string.
   - **Tests**: `limits.spec.ts` and `max-length-from-config.spec.ts`.
-- [ ] T013 [P] Create the typed request shapes in `src/common/http/`.
+- [X] T013 [P] Create the typed request shapes in `src/common/http/`.
   - **`src/common/http/viewer-request.ts`**: `AuthenticatedUser { userId: string; accountType: 'customer'|'seller'; externalId: number; standing: 'good'|'suspended'|'deleted'; locale: 'ar'|'en'; preferredCurrency: string | null }`, plus `AuthenticatedRequest` and `ViewerRequest` (with optional `user` and `installationId`).
   - **`src/common/http/viewer.decorator.ts`**: param decorators `@CurrentUser()`, which returns `AuthenticatedUser`, and `@Viewer()`, which returns `{ user?: AuthenticatedUser; installationId?: string }`.
-- [ ] T014 [P] Implement `src/common/text/normalize-for-match.ts` per R8.
+- [X] T014 [P] Implement `src/common/text/normalize-for-match.ts` per R8.
   - **`normalizeForMatch()`**: NFKC, lowercase, strip U+064B–U+065F, U+0670, and U+0640, map أإآٱ to ا, ى to ي, and ة to ه, and map U+0660–U+0669 and U+06F0–U+06F9 to 0–9.
   - **Patterns**: export `HASHTAG_PATTERN = /#([\p{L}\p{M}\p{N}_]+)/gu` and `MENTION_PATTERN = /@([\p{L}\p{M}\p{N}_.]+)/gu`.
   - **Tests**: `src/common/text/normalize-for-match.spec.ts` with a table covering each letter mapping, diacritics, tatweel, both digit styles, Latin case, presentation forms, and mixed Arabic, English, and emoji text (SC-009).
-- [ ] T015 [P] Implement the storage service in `src/common/storage/` per R12.
+- [X] T015 [P] Implement the storage service in `src/common/storage/` per R12.
   - **`storage.module.ts`**: global.
   - **`storage.service.ts`**: an interface with:
     - `putFile(bucket, key, filePath, contentType)` and `copy(fromBucket, toBucket, key)`. Every write into `S3_PUBLIC_BUCKET` sets `Cache-Control: public, max-age=300` (R12).
@@ -122,14 +122,14 @@ description: "Task list for the China Parts Reels Service"
     - `publicUrl(key)`, which uses `MEDIA_PUBLIC_BASE_URL`.
   - **Drivers**: `drivers/s3.driver.ts` uses `@aws-sdk/client-s3` with `S3_ENDPOINT` and `forcePathStyle`. `drivers/local.driver.ts` uses `./.local-media/<bucket>/`.
   - **Tests**: `storage.service.spec.ts` against the local driver, including the public-bucket `Cache-Control` metadata.
-- [ ] T016 Create the China Parts module in `src/modules/china-parts/` per R3.
+- [X] T016 Create the China Parts module in `src/modules/china-parts/` per R3.
   - **`china-parts.module.ts`**: exports the repositories below.
   - **`mysql.provider.ts`**: a `mysql2/promise` pool from `CHINAPARTS_MYSQL_*`, with optional SSL and `connectionLimit` 10, plus a `ping()` for health checks. Wrap every driver error as `ServiceUnavailableException({ error: 'UPSTREAM_UNAVAILABLE' })`.
   - **`china-parts.config.ts`**: parses the mapping variables in contracts/chinaparts-read-model.md into typed sets: customer, seller, product, and shop types, approved seller values, collections, disk URLs, token expiry, base currency, and the validated FX identifiers and rate direction.
-- [ ] T017 [P] Implement `src/modules/china-parts/tokens.repository.ts`.
+- [X] T017 [P] Implement `src/modules/china-parts/tokens.repository.ts`.
   - **Methods**: `findById(id)` and `findByHash(sha256Hex)`, using exactly the column lists in contracts/chinaparts-read-model.md ("Queries the service runs").
   - **Tests**: `tokens.repository.spec.ts` mocks the pool and asserts that no `SELECT *` is ever issued.
-- [ ] T018 [P] Implement `src/modules/china-parts/chinaparts-accounts.repository.ts`.
+- [X] T018 [P] Implement `src/modules/china-parts/chinaparts-accounts.repository.ts`.
   - **Methods**: `getCustomers(ids)` and `getSellers(ids)`, which uses the lowest-id shop subquery. Both batch in groups of 1,000 and read `preferred_currency`, never `updated_at`. They return only the rows found, and callers derive missing ids.
   - **Images**: resolved per R7. Relative `customers.image` paths get `CHINAPARTS_PUBLIC_STORAGE_URL`. Seller and shop images come from `media` through `CHINAPARTS_MEDIA_URL_TEMPLATE` and `CHINAPARTS_DISK_URLS`.
   - **Output**: maps rows to `ChinaPartsAccount { accountType, externalId, name, avatarUrl, standing, preferredCurrency }`.
@@ -138,26 +138,26 @@ description: "Task list for the China Parts Reels Service"
     - A customer is `good` when status is 1. A seller is `good` when status is in the approved values. Everything else is `suspended`.
     - An empty `preferred_currency` becomes `null`.
   - **Tests**: `chinaparts-accounts.repository.spec.ts`.
-- [ ] T019 Create `src/modules/accounts/schemas/reels-account.schema.ts` with every field and index in the data-model.md "reels_accounts" section, including `locale`, `preferredCurrency`, and `missingSince`. Field names `name`, `username`, `avatarUrl`, `bio`, `blockedUsers`, `followersCount`, `followingCount`, and `totalLikes` must match what the ported reels code reads from Ciro's `User`. `blockedUsers` is typed `Types.ObjectId[]` with ref `ReelsAccount`.
-- [ ] T020 Implement `src/modules/accounts/accounts.repository.ts`, extending `BaseRepository<ReelsAccountDocument>`.
+- [X] T019 Create `src/modules/accounts/schemas/reels-account.schema.ts` with every field and index in the data-model.md "reels_accounts" section, including `locale`, `preferredCurrency`, and `missingSince`. Field names `name`, `username`, `avatarUrl`, `bio`, `blockedUsers`, `followersCount`, `followingCount`, and `totalLikes` must match what the ported reels code reads from Ciro's `User`. `blockedUsers` is typed `Types.ObjectId[]` with ref `ReelsAccount`.
+- [X] T020 Implement `src/modules/accounts/accounts.repository.ts`, extending `BaseRepository<ReelsAccountDocument>`.
   - **Methods**:
     - `findByExternal(type, externalId)` and `createProvisioned(data)`
     - `findByIdsLean(ids, projection)` and `listByType(type, afterId, limit): Promise<{ id: string; externalId: number }[]>`, which pages over every account for the sync
     - `updateDisplay(id, { name, nameNormalized, avatarUrl, standing, preferredCurrency, syncedAt })`
     - `setMissingSince(ids, date | null)`, `markDeleted(ids)`, `updateLocale(id, locale)`, and `updateProfile(id, { username, usernameNormalized, bio })`
   - **Rule**: every read is `.lean()` with a projection.
-- [ ] T021 [P] Implement `src/modules/accounts/handle.util.ts` per R6.
+- [X] T021 [P] Implement `src/modules/accounts/handle.util.ts` per R6.
   - **`generateHandleBase(name, accountType)`**: spaces become `_`, characters outside `[\p{L}\p{M}\p{N}_.]` are stripped, and the result is cut to 30 characters. Under 3 characters, the fallback is `shop` for sellers or `user` for customers.
   - **`isValidHandle(value)`**: true for 3 to 30 characters of letters, marks, digits, `_`, or `.`.
   - **Tests**: `handle.util.spec.ts` covering an Arabic-only shop name, a mixed name, symbols, and short names.
-- [ ] T022 Implement `src/modules/accounts/accounts.service.ts` and `src/modules/accounts/accounts.module.ts`. The module exports `AccountsService`, `AccountsRepository`, `StandingService`, and the `ReelsAccount` Mongoose feature.
+- [X] T022 Implement `src/modules/accounts/accounts.service.ts` and `src/modules/accounts/accounts.module.ts`. The module exports `AccountsService`, `AccountsRepository`, `StandingService`, and the `ReelsAccount` Mongoose feature.
   - **`resolveOrProvision(chinaPartsAccount)`**: finds by `(accountType, externalId)`. If missing, it creates the account with a generated handle, retrying on a duplicate `usernameNormalized` with `_2`, `_3`, and so on, up to 20 times. If found, it refreshes the display fields and `preferredCurrency` when they changed.
   - **`getMe(userId)`**.
   - **`updateMe(userId, {username?, bio?})`**: validates with `isValidHandle`, limits the bio to 150 characters, and returns `409 USERNAME_TAKEN` on a normalized collision.
   - **`recordLocale(userId, 'ar'|'en')`**.
   - **Tests**: `accounts.service.spec.ts`.
-- [ ] T023 [P] Implement `src/modules/accounts/standing.service.ts` per R7. It maintains the Redis set `standing:excluded` of account ids not in good standing, with `isExcluded(id)`, `members()` cached in memory for 10 s, `add(id)`, `remove(id)`, and `replaceAll(ids)`. Write `replaceAll` atomically through a temporary key plus `RENAME`. Add `standing.service.spec.ts`.
-- [ ] T024 Implement `src/modules/accounts/china-parts-token.strategy.ts`, a `PassportStrategy(BearerStrategy, 'chinaparts')`, following R4's steps 1 to 6 exactly.
+- [X] T023 [P] Implement `src/modules/accounts/standing.service.ts` per R7. It maintains the Redis set `standing:excluded` of account ids not in good standing, with `isExcluded(id)`, `members()` cached in memory for 10 s, `add(id)`, `remove(id)`, and `replaceAll(ids)`. Write `replaceAll` atomically through a temporary key plus `RENAME`. Add `standing.service.spec.ts`.
+- [X] T024 Implement `src/modules/accounts/china-parts-token.strategy.ts`, a `PassportStrategy(BearerStrategy, 'chinaparts')`, following R4's steps 1 to 6 exactly.
   - **Validation**: compare hashes with `crypto.timingSafeEqual`. Apply `CHINAPARTS_TOKEN_EXPIRATION_MINUTES`. A `tokenable_type` outside the customer and seller sets is rejected (FR-007).
   - **Caching**: cache `auth:tok:{sha256(token)}` for `AUTH_CACHE_TTL_SECONDS`. Refresh the account through `ChinaPartsAccountsRepository` behind the 60 s `auth:acct:` cache, which holds `{ standing, name, avatarUrl, locale, preferredCurrency }` (data-model.md "Redis Keys").
   - **Side effects**: call `AccountsService.resolveOrProvision`. When standing changed, update `reels_accounts.standing` and `StandingService`.
@@ -172,16 +172,16 @@ description: "Task list for the China Parts Reels Service"
     - It sets `req.installationId` from `X-Installation-Id` only when the value is a valid UUID v4.
   - **Ported guard**: fold the cases of `src/modules/reels/admin-key.guard.spec.ts` into `viewer-auth.guard.spec.ts`, then delete `src/modules/reels/admin-key.guard.ts` and its spec.
   - **Tests**: `viewer-auth.guard.spec.ts`.
-- [ ] T026 [P] Implement the throttling guards in `src/common/guards/` per R10, steps 1 and 3. Both are custom `CanActivate` guards that call the injected `ThrottlerStorage.increment(key, ttlMs, limit, 0, name)`. Over the limit, they throw `429 RATE_LIMITED` with a `Retry-After` header. Both skip routes marked `@SkipRateLimit()`.
+- [X] T026 [P] Implement the throttling guards in `src/common/guards/` per R10, steps 1 and 3. Both are custom `CanActivate` guards that call the injected `ThrottlerStorage.increment(key, ttlMs, limit, 0, name)`. Over the limit, they throw `429 RATE_LIMITED` with a `Retry-After` header. Both skip routes marked `@SkipRateLimit()`.
   - **`ip-throttler.guard.ts`**: key `ip:{req.ip}`, limit `IP_RATE_LIMIT_PER_MINUTE` per minute.
   - **`identity-throttler.guard.ts`**:
     - Signed-in callers use key `user:{userId}` with `USER_RATE_LIMIT_PER_MINUTE`. Guests use `guest:{installationId ?? 'none'}:{ip}` with `GUEST_RATE_LIMIT_PER_MINUTE`.
     - Routes marked `@RateLimitClass('upload')` add `upload:{userId}` with `UPLOAD_RATE_LIMIT_PER_HOUR` per hour.
     - Routes marked `@RateLimitClass('write')` add `write:{userId}` with `WRITE_RATE_LIMIT_PER_MINUTE`.
   - **Tests**: `ip-throttler.guard.spec.ts` and `identity-throttler.guard.spec.ts`.
-- [ ] T027 [P] Implement `src/common/guards/good-standing.guard.ts` per R10, step 4. For any non-GET request with `req.user`, it throws `403 ACCOUNT_NOT_IN_GOOD_STANDING` unless `standing === 'good'` or the route carries `@StandingExempt()`. Add `good-standing.guard.spec.ts`.
+- [X] T027 [P] Implement `src/common/guards/good-standing.guard.ts` per R10, step 4. For any non-GET request with `req.user`, it throws `403 ACCOUNT_NOT_IN_GOOD_STANDING` unless `standing === 'good'` or the route carries `@StandingExempt()`. Add `good-standing.guard.spec.ts`.
 - [ ] T028 Register the global guard chain in `src/app.module.ts` as `APP_GUARD` providers in exactly this order: `IpThrottlerGuard`, `ViewerAuthGuard`, `IdentityThrottlerGuard`, `GoodStandingGuard`. Add a comment explaining that the order is load-bearing (R10).
-- [ ] T029 Implement the `src/modules/health/` module and register it in `src/app.module.ts`.
+- [X] T029 Implement the `src/modules/health/` module and register it in `src/app.module.ts`.
   - **Routes**: `health.controller.ts` serves `GET /health/live` (always 200) and `GET /health/ready`, which pings MongoDB, Redis, and MySQL. Both sit outside `/api` and carry `@Access('public')` and `@SkipRateLimit()`.
   - **Envelope**: both return the standard envelope. A failed readiness check throws `ServiceUnavailableException({ error: 'NOT_READY', message })`, with `message` naming the failed dependencies (R26).
 - [ ] T030 Port identity across `src/modules/reels/`: replace every use of Ciro's `User` model with `ReelsAccount`.

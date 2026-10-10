@@ -264,10 +264,7 @@ export class ReelsDbRepository implements ReelsRepository {
       .lean()
       .exec();
     const reposterIds = [
-      ...new Set([
-        ...follows.map((f) => f.followeeId.toString()),
-        viewerId,
-      ]),
+      ...new Set([...follows.map((f) => f.followeeId.toString()), viewerId]),
     ]
       .map((id) => this.toObjectId(id))
       .filter((id): id is Types.ObjectId => id !== null);
@@ -294,7 +291,9 @@ export class ReelsDbRepository implements ReelsRepository {
       }
     }
 
-    const videoIds = [...repostsByVideo.keys()].map((id) => this.toObjectId(id));
+    const videoIds = [...repostsByVideo.keys()].map((id) =>
+      this.toObjectId(id),
+    );
     const reposterIdsNeeded = [
       ...new Set(reposts.map((r) => r.reposterId.toString())),
     ].map((id) => this.toObjectId(id));
@@ -317,7 +316,9 @@ export class ReelsDbRepository implements ReelsRepository {
     ]);
     const visibleVideoIds = new Set(reels.map((r) => r._id.toString()));
     const excludeReposterSet = new Set(excludeCreatorIds);
-    const reposterById = new Map(reposterUsers.map((u) => [u._id.toString(), u]));
+    const reposterById = new Map(
+      reposterUsers.map((u) => [u._id.toString(), u]),
+    );
 
     const attributions = new Map<string, RepostAttribution>();
     for (const [videoId, list] of repostsByVideo) {
@@ -998,7 +999,9 @@ export class ReelsDbRepository implements ReelsRepository {
       targetUserId,
     );
     for (const item of items) {
-      const others = (relevant.get(item.id) ?? []).filter((r) => r.id !== targetUserId);
+      const others = (relevant.get(item.id) ?? []).filter(
+        (r) => r.id !== targetUserId,
+      );
       const ordered2 = [ownerReposter, ...others];
       item.repostedBy = ownerReposter;
       item.repostersCount = ordered2.length;
@@ -1046,7 +1049,10 @@ export class ReelsDbRepository implements ReelsRepository {
       .filter((id): id is Types.ObjectId => id !== null);
 
     const reposts = await this.repostModel
-      .find({ videoId: { $in: videoObjectIds }, reposterId: { $in: relevantIds } })
+      .find({
+        videoId: { $in: videoObjectIds },
+        reposterId: { $in: relevantIds },
+      })
       .sort({ createdAt: -1, _id: -1 })
       .lean()
       .exec();
@@ -1237,7 +1243,12 @@ export class ReelsDbRepository implements ReelsRepository {
    */
   async listReposters(
     reelId: string,
-    params: { viewerId: string; cursor?: string; limit: number; excludeUserIds: string[] },
+    params: {
+      viewerId: string;
+      cursor?: string;
+      limit: number;
+      excludeUserIds: string[];
+    },
   ): Promise<{ items: FollowedUserDto[]; nextCursor: string | null } | null> {
     const videoId = this.toObjectId(reelId);
     if (!videoId) return null;
@@ -1306,7 +1317,9 @@ export class ReelsDbRepository implements ReelsRepository {
     id: string,
     viewerId: string,
   ): Promise<
-    { deleted: true; videoUrl: string; thumbnailUrl: string } | 'forbidden' | null
+    | { deleted: true; videoUrl: string; thumbnailUrl: string }
+    | 'forbidden'
+    | null
   > {
     const videoId = this.toObjectId(id);
     if (!videoId) return null;
@@ -1359,7 +1372,10 @@ export class ReelsDbRepository implements ReelsRepository {
     reason: ReelReportReasonValue,
     customReason: string | undefined,
   ): Promise<
-    { reported: true; alreadyReported: boolean } | 'self' | 'rate_limited' | null
+    | { reported: true; alreadyReported: boolean }
+    | 'self'
+    | 'rate_limited'
+    | null
   > {
     const videoId = this.toObjectId(id);
     const userId = this.toObjectId(viewerId);
@@ -1516,11 +1532,9 @@ export class ReelsDbRepository implements ReelsRepository {
         : { $set: { status: ReelStatus.REJECTED } };
 
     const updated = await this.reelModel
-      .findOneAndUpdate(
-        { _id: videoId, status: ReelStatus.HIDDEN },
-        update,
-        { returnDocument: 'after' },
-      )
+      .findOneAndUpdate({ _id: videoId, status: ReelStatus.HIDDEN }, update, {
+        returnDocument: 'after',
+      })
       .exec();
     // A concurrent admin action already decided it — never double-fire.
     if (!updated) return 'not_hidden';

@@ -23,8 +23,5 @@ export interface ModerationProvider {
    * (never resolve to a fabricated verdict) on any failure so the caller's
    * fail-closed retry policy (FR-066) takes over.
    */
-  analyze(
-    videoPath: string,
-    description: string,
-  ): Promise<ModerationVerdict>;
+  analyze(videoPath: string, description: string): Promise<ModerationVerdict>;
 }

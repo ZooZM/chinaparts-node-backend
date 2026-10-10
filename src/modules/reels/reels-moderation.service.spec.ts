@@ -30,7 +30,9 @@ describe('ReelsModerationService', () => {
 
   function buildReelModel(reelDoc: unknown, updateResult: unknown) {
     return {
-      findById: jest.fn(() => ({ exec: jest.fn(() => Promise.resolve(reelDoc)) })),
+      findById: jest.fn(() => ({
+        exec: jest.fn(() => Promise.resolve(reelDoc)),
+      })),
       findOneAndUpdate: jest.fn(() => ({
         exec: jest.fn(() => Promise.resolve(updateResult)),
       })),
@@ -47,7 +49,9 @@ describe('ReelsModerationService', () => {
           lean: jest.fn(() => ({
             exec: jest.fn(() =>
               Promise.resolve({
-                blockedUsers: creatorBlocked.map((id) => new Types.ObjectId(id)),
+                blockedUsers: creatorBlocked.map(
+                  (id) => new Types.ObjectId(id),
+                ),
               }),
             ),
           })),
@@ -113,14 +117,18 @@ describe('ReelsModerationService', () => {
   it('publishes on a clean verdict and fires mention notifications exactly once', async () => {
     const reelModel = buildReelModel(
       basePendingReel({
-        mentions: [{ userId: new Types.ObjectId(mentionedId), username: 'bob' }],
+        mentions: [
+          { userId: new Types.ObjectId(mentionedId), username: 'bob' },
+        ],
       }),
       { _id: new Types.ObjectId(reelId) },
     );
     const userModel = buildUserModel();
     const notifications = buildNotifications();
     const provider: jest.Mocked<ModerationProvider> = {
-      analyze: jest.fn((_videoPath: string, _description: string) => Promise.resolve({ verdict: 'clean' as const })),
+      analyze: jest.fn((_videoPath: string, _description: string) =>
+        Promise.resolve({ verdict: 'clean' as const }),
+      ),
     };
     const service = new ReelsModerationService(
       reelModel as never,
@@ -197,7 +205,9 @@ describe('ReelsModerationService', () => {
     const userModel = buildUserModel();
     const notifications = buildNotifications();
     const provider: jest.Mocked<ModerationProvider> = {
-      analyze: jest.fn((_videoPath: string, _description: string) => Promise.reject(new Error('provider unreachable'))),
+      analyze: jest.fn((_videoPath: string, _description: string) =>
+        Promise.reject(new Error('provider unreachable')),
+      ),
     };
     const service = new ReelsModerationService(
       reelModel as never,
@@ -222,7 +232,9 @@ describe('ReelsModerationService', () => {
     const userModel = buildUserModel();
     const notifications = buildNotifications();
     const provider: jest.Mocked<ModerationProvider> = {
-      analyze: jest.fn((_videoPath: string, _description: string) => Promise.resolve({ verdict: 'clean' as const })),
+      analyze: jest.fn((_videoPath: string, _description: string) =>
+        Promise.resolve({ verdict: 'clean' as const }),
+      ),
     };
     const service = new ReelsModerationService(
       reelModel as never,
@@ -239,15 +251,22 @@ describe('ReelsModerationService', () => {
   it('suppresses a mention notification when the mentioned user has blocked the creator', async () => {
     const reelModel = buildReelModel(
       basePendingReel({
-        mentions: [{ userId: new Types.ObjectId(mentionedId), username: 'bob' }],
+        mentions: [
+          { userId: new Types.ObjectId(mentionedId), username: 'bob' },
+        ],
       }),
       { _id: new Types.ObjectId(reelId) },
     );
     // Reverse block: `mentionedId` blocked `creatorId`.
-    const userModel = buildUserModel([], [{ _id: new Types.ObjectId(mentionedId) }]);
+    const userModel = buildUserModel(
+      [],
+      [{ _id: new Types.ObjectId(mentionedId) }],
+    );
     const notifications = buildNotifications();
     const provider: jest.Mocked<ModerationProvider> = {
-      analyze: jest.fn((_videoPath: string, _description: string) => Promise.resolve({ verdict: 'clean' as const })),
+      analyze: jest.fn((_videoPath: string, _description: string) =>
+        Promise.resolve({ verdict: 'clean' as const }),
+      ),
     };
     const service = new ReelsModerationService(
       reelModel as never,

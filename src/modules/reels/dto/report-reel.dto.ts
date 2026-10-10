@@ -1,4 +1,10 @@
-import { IsEnum, IsNotEmpty, IsString, MaxLength, ValidateIf } from 'class-validator';
+import {
+  IsEnum,
+  IsNotEmpty,
+  IsString,
+  MaxLength,
+  ValidateIf,
+} from 'class-validator';
 import { Transform } from 'class-transformer';
 import { ReelReportReason } from '../schemas/reel-report.schema';
 

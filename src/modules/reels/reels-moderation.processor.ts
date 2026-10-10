@@ -62,9 +62,8 @@ export class ReelsModerationProcessor
 
   private async sweep(): Promise<void> {
     try {
-      const staleIds = await this.moderation.findStalePendingIds(
-        STALE_THRESHOLD_MS,
-      );
+      const staleIds =
+        await this.moderation.findStalePendingIds(STALE_THRESHOLD_MS);
       for (const reelId of staleIds) {
         await this.queue.add('moderate', { reelId }, { jobId: reelId });
       }

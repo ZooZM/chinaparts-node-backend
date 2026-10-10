@@ -1,9 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { basename } from 'path';
-import {
-  ModerationProvider,
-  ModerationVerdict,
-} from './moderation-provider';
+import { ModerationProvider, ModerationVerdict } from './moderation-provider';
 
 /**
  * v3 (R15): dev/test moderation provider — no external credentials

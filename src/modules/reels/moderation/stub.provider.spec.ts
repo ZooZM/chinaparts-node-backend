@@ -4,12 +4,18 @@ describe('StubModerationProvider', () => {
   const provider = new StubModerationProvider();
 
   it('is clean when neither the filename nor the description carries the marker', async () => {
-    const result = await provider.analyze('/tmp/uploads/clip-123.mp4', 'a nice sunset');
+    const result = await provider.analyze(
+      '/tmp/uploads/clip-123.mp4',
+      'a nice sunset',
+    );
     expect(result.verdict).toBe('clean');
   });
 
   it('flags on the filename marker', async () => {
-    const result = await provider.analyze('/tmp/uploads/nsfw-test.mp4', 'a nice sunset');
+    const result = await provider.analyze(
+      '/tmp/uploads/nsfw-test.mp4',
+      'a nice sunset',
+    );
     expect(result.verdict).toBe('flagged');
     expect(result.flaggedSource).toBe('video');
   });
