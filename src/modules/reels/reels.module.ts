@@ -12,6 +12,12 @@ import {
 import { AccountsModule } from '../accounts/accounts.module';
 import { ChinaPartsModule } from '../china-parts/china-parts.module';
 import { PushModule } from '../push/push.module';
+import { HashtagStatsRepository } from './hashtags/hashtag-stats.repository';
+import {
+  HashtagStats,
+  HashtagStatsSchema,
+} from './hashtags/hashtag-stats.schema';
+import { HashtagStatsService } from './hashtags/hashtag-stats.service';
 import { MediaVisibilityProcessor } from './lifecycle/media-visibility.processor';
 import { CommentsRepository } from './comments/comments.repository';
 import { CommentsService } from './comments/comments.service';
@@ -73,6 +79,7 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
       { name: ReelReport.name, schema: ReelReportSchema },
       { name: ReelRepost.name, schema: ReelRepostSchema },
       { name: ReelProductTap.name, schema: ReelProductTapSchema },
+      { name: HashtagStats.name, schema: HashtagStatsSchema },
       { name: Follow.name, schema: FollowSchema },
       { name: NotificationEvent.name, schema: NotificationEventSchema },
     ]),
@@ -104,6 +111,8 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
     NotificationEventsRepository,
     CommentsRepository,
     CommentsService,
+    HashtagStatsRepository,
+    HashtagStatsService,
     ProductLinksService,
     PriceConversionService,
     ReelsNotificationsService,

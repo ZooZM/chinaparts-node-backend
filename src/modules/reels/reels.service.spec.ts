@@ -9,6 +9,7 @@ import { LimitsService } from '../../common/config/limits';
 import type { AuthenticatedUser } from '../../common/http/viewer-request';
 import { AccountsService } from '../accounts/accounts.service';
 import { StandingService } from '../accounts/standing.service';
+import type { HashtagStatsService } from './hashtags/hashtag-stats.service';
 import { ReelLifecycleService } from './lifecycle/reel-lifecycle.service';
 import { ReelPresenter } from './presentation/reel-presenter.service';
 import { ReelsNotificationsService } from './reels-notifications.service';
@@ -51,6 +52,7 @@ function snapshot(overrides: Partial<ReelSnapshot> = {}): ReelSnapshot {
     creatorId: otherId,
     status: 'published',
     media: { videoKey: 'v', thumbnailKey: 't', location: 'public' },
+    hashtags: [],
     hashtagsNormalized: [],
     ...overrides,
   };
@@ -126,6 +128,9 @@ function setup() {
     notifyReelLike: jest.fn().mockResolvedValue(undefined),
     notifyNewFollower: jest.fn().mockResolvedValue(undefined),
   };
+  const hashtags = {
+    findMatching: jest.fn().mockResolvedValue([]),
+  };
   const limits = new LimitsService({
     get: (key: string) => LIMIT_VALUES[key],
   } as never);
@@ -138,6 +143,7 @@ function setup() {
     lifecycle as unknown as ReelLifecycleService,
     notifications as unknown as ReelsNotificationsService,
     limits,
+    hashtags as unknown as HashtagStatsService,
   );
   return {
     service,
@@ -147,6 +153,7 @@ function setup() {
     presenter,
     lifecycle,
     notifications,
+    hashtags,
   };
 }
 
@@ -680,7 +687,10 @@ describe('ReelsService', () => {
         id: reelId,
         status: 'rejected',
       });
-      expect(lifecycle.onUnpublished).toHaveBeenCalledWith(rejected);
+      // The reel was hidden, so its tags were already taken off then: not a second time.
+      expect(lifecycle.onUnpublished).toHaveBeenCalledWith(rejected, {
+        wasPublished: false,
+      });
       expect(lifecycle.onRestored).not.toHaveBeenCalled();
     });
 
@@ -993,12 +1003,51 @@ describe('ReelsService', () => {
       });
     });
 
-    it('searches with the normalized query (FR-049a)', async () => {
+    it('searches accounts with the normalized query (FR-049a)', async () => {
       const { service, repository } = setup();
       await service.searchUsers(me, { q: 'أحمد' });
-      await service.searchReels(me, { q: 'إطار' });
       expect(argOf<{ q: string }>(repository.searchUsers, 0, 0).q).toBe('احمد');
-      expect(argOf<{ q: string }>(repository.searchReels, 0, 0).q).toBe('اطار');
+    });
+
+    describe('searching reels (FR-049, research R9)', () => {
+      it('normalizes the query, finds the matching tags in the dictionary, and searches by them', async () => {
+        const { service, repository, hashtags } = setup();
+        hashtags.findMatching.mockResolvedValue(['اطارات', 'اطارات_جديده']);
+
+        await service.searchReels(me, { q: 'إطار' });
+
+        expect(hashtags.findMatching).toHaveBeenCalledWith('اطار');
+        expect(repository.searchReels).toHaveBeenCalledWith(
+          expect.objectContaining({
+            viewerId: me.userId,
+            tags: ['اطارات', 'اطارات_جديده'],
+          }),
+        );
+      });
+
+      it('ignores a leading #, and treats a query of only # as no query', async () => {
+        const { service, hashtags } = setup();
+
+        await service.searchReels(me, { q: '#فلتر' });
+        await service.searchReels(me, { q: '##' });
+
+        expect(hashtags.findMatching).toHaveBeenNthCalledWith(1, 'فلتر');
+        expect(hashtags.findMatching).toHaveBeenNthCalledWith(2, '');
+      });
+
+      it('passes the exclusion set and the clamped page size on', async () => {
+        const { service, repository, standing } = setup();
+        standing.members.mockResolvedValue(new Set(['suspended']));
+
+        await service.searchReels(me, { q: 'x', limit: 500 });
+
+        expect(repository.searchReels).toHaveBeenCalledWith(
+          expect.objectContaining({
+            limit: 25,
+            excludeCreatorIds: ['suspended'],
+          }),
+        );
+      });
     });
   });
 });

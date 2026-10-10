@@ -3,7 +3,6 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { ErrorCode } from '../../common/errors/error-codes';
 import { isDuplicateKeyError } from '../../common/mongo/duplicate-key';
-import { escapeRegex } from '../../common/text/escape-regex';
 import { AccountsRepository } from '../accounts/accounts.repository';
 import {
   decodeFeedCursor,
@@ -12,6 +11,7 @@ import {
   FEED_TOP,
   MAX_INJECTED,
 } from './feed/feed-cursor';
+import { decodeOffsetCursor, encodeOffsetCursor } from './feed/offset-cursor';
 import { Follow, FollowDocument } from './schemas/follow.schema';
 import {
   NotificationEvent,
@@ -62,6 +62,9 @@ import {
   ReelSnapshot,
   UserSearchResultDto,
 } from './reels.repository';
+
+/** Account search serves at most this many results, however it is paged (research R9). */
+const ACCOUNT_SEARCH_CAP = 200;
 
 /** A feed of followed accounts reads at most this many of them: the most recently followed. */
 const MAX_FOLLOWEES = 5_000;
@@ -139,6 +142,7 @@ function snapshotOf(reel: ReelLean): ReelSnapshot {
     creatorId: reel.creatorId.toString(),
     status: reel.status,
     media: mediaOf(reel),
+    hashtags: reel.hashtags,
     hashtagsNormalized: reel.hashtagsNormalized,
   };
 }
@@ -1410,30 +1414,41 @@ export class ReelsDbRepository implements ReelsRepository {
 
   async searchReels(params: {
     viewerId: string;
-    q: string;
+    tags: string[];
     cursor?: string;
     limit: number;
     excludeCreatorIds: string[];
   }): Promise<Page<ReelRecord>> {
-    const offset = this.parseCursor(params.cursor);
-    const filter: Record<string, unknown> = {
-      hashtagsNormalized: { $regex: escapeRegex(params.q) },
-      ...this.excludeFilter(params.excludeCreatorIds),
-      ...this.visibilityFilter(params.viewerId),
-    };
-    const total = await this.reelModel.countDocuments(filter).exec();
-    if (total === 0) return { items: [], nextCursor: null };
+    const position = decodeListCursor(params.cursor);
+    if (params.tags.length === 0) return { items: [], nextCursor: null };
+
+    const conditions: Record<string, unknown>[] = [
+      {
+        status: ReelStatus.PUBLISHED,
+        hashtagsNormalized: { $in: params.tags },
+        ...this.excludeFilter(params.excludeCreatorIds),
+      },
+    ];
+    if (position) conditions.push(this.before(position));
+
     const docs = await this.reelModel
-      .find(filter)
+      .find({ $and: conditions })
       .sort({ createdAt: -1, _id: -1 })
-      .skip(offset)
-      .limit(params.limit)
+      .limit(params.limit + 1)
       .lean<ReelLean[]>()
       .exec();
-    const nextOffset = offset + params.limit;
+    const page = docs.slice(0, params.limit);
+    const last = page[page.length - 1];
     return {
-      items: await this.hydrate(docs, params.viewerId),
-      nextCursor: nextOffset < total ? String(nextOffset) : null,
+      items: await this.hydrate(page, params.viewerId),
+      nextCursor:
+        docs.length > params.limit && last
+          ? encodeFeedCursor({
+              pass: 0,
+              createdAt: last.createdAt ?? new Date(0),
+              id: last._id.toString(),
+            })
+          : null,
     };
   }
 
@@ -1444,21 +1459,23 @@ export class ReelsDbRepository implements ReelsRepository {
     limit: number;
     excludeUserIds: string[];
   }): Promise<Page<UserSearchResultDto>> {
-    const offset = this.parseCursor(params.cursor);
-    const { total, items } = await this.accounts.searchByNormalized({
+    const offset = decodeOffsetCursor(params.cursor);
+    const found = await this.accounts.searchRanked({
       normalizedQuery: params.q,
       excludeIds: [params.viewerId, ...params.excludeUserIds],
-      skip: offset,
+      offset,
       limit: params.limit,
+      cap: ACCOUNT_SEARCH_CAP,
     });
-    if (total === 0) return { items: [], nextCursor: null };
+    const page = found.slice(0, params.limit);
+    if (page.length === 0) return { items: [], nextCursor: null };
 
     const viewerObjectId = toObjectId(params.viewerId);
     const followed = viewerObjectId
       ? await this.followModel
           .find({
             followerId: viewerObjectId,
-            followeeId: { $in: items.map((account) => account._id) },
+            followeeId: { $in: page.map((account) => account._id) },
           })
           .select({ followeeId: 1 })
           .lean<Array<{ followeeId: Types.ObjectId }>>()
@@ -1466,13 +1483,15 @@ export class ReelsDbRepository implements ReelsRepository {
       : [];
     const followedSet = new Set(followed.map((f) => f.followeeId.toString()));
 
-    const nextOffset = offset + params.limit;
     return {
-      items: items.map((account) => ({
+      items: page.map((account) => ({
         ...summaryOf(account),
         viewerFollowing: followedSet.has(account._id.toString()),
       })),
-      nextCursor: nextOffset < total ? String(nextOffset) : null,
+      nextCursor:
+        found.length > params.limit
+          ? encodeOffsetCursor(offset + params.limit)
+          : null,
     };
   }
 
@@ -1950,7 +1969,13 @@ export class ReelsDbRepository implements ReelsRepository {
     if (!objectId) return null;
     const reel = await this.reelModel
       .findById(objectId)
-      .select({ creatorId: 1, status: 1, media: 1, hashtagsNormalized: 1 })
+      .select({
+        creatorId: 1,
+        status: 1,
+        media: 1,
+        hashtags: 1,
+        hashtagsNormalized: 1,
+      })
       .lean<ReelLean>()
       .exec();
     return reel ? snapshotOf(reel) : null;

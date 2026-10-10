@@ -26,6 +26,7 @@ function candidate(
       thumbnailKey: `reels/${reelId}/thumb.jpg`,
       location: 'private',
     },
+    hashtags: [],
     hashtagsNormalized: [],
     description: 'a clean description',
     mentions: [],

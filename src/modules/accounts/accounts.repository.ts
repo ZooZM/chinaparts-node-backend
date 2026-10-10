@@ -331,41 +331,70 @@ export class AccountsRepository extends BaseRepository<ReelsAccountDocument> {
   }
 
   /**
-   * Accounts whose handle or public name contains the (already normalized) query, in name order.
-   * The ranking by exact match and followers comes with the search task (US6).
+   * Accounts whose handle or public name contains the (already normalized) query, ranked for
+   * search (research R9): an exact match on the handle or the name first, then the rest by
+   * follower count, highest first. Only the first `cap` of that list exist, and `offset` and
+   * `limit` pick a window of it. One more than `limit` is read, when the cap allows, so the caller
+   * knows whether there is a next page without counting.
+   *
+   * Excluded accounts and the `deleted` standing never appear.
    */
-  async searchByNormalized(params: {
+  async searchRanked(params: {
     normalizedQuery: string;
     excludeIds: string[];
-    skip: number;
+    offset: number;
     limit: number;
-  }): Promise<{
-    total: number;
-    items: Array<
-      Pick<ReelsAccountLean, '_id' | 'username' | 'name' | 'avatarUrl'>
+    cap: number;
+  }): Promise<
+    Array<Pick<ReelsAccountLean, '_id' | 'username' | 'name' | 'avatarUrl'>>
+  > {
+    const wanted = Math.min(params.limit + 1, params.cap - params.offset);
+    if (wanted <= 0) return [];
+
+    type Found = Pick<
+      ReelsAccountLean,
+      '_id' | 'username' | 'name' | 'avatarUrl'
     >;
-  }> {
-    const pattern = { $regex: escapeRegex(params.normalizedQuery) };
-    const filter = {
-      _id: { $nin: toObjectIds(params.excludeIds) },
+    const base = {
       standing: { $ne: 'deleted' as const },
-      $or: [{ usernameNormalized: pattern }, { nameNormalized: pattern }],
     };
-    const [total, items] = await Promise.all([
-      this.model.countDocuments(filter).exec(),
-      this.model
-        .find(filter)
-        .sort({ name: 1, _id: 1 })
-        .skip(params.skip)
-        .limit(params.limit)
-        .select({ username: 1, name: 1, avatarUrl: 1 })
-        .lean<
-          Array<
-            Pick<ReelsAccountLean, '_id' | 'username' | 'name' | 'avatarUrl'>
-          >
-        >()
-        .exec(),
-    ]);
-    return { total, items };
+    const excluded = toObjectIds(params.excludeIds);
+    const select = { username: 1, name: 1, avatarUrl: 1 };
+    const order = { followersCount: -1, _id: 1 } as const;
+
+    // Equality on indexed fields: at most a couple of accounts.
+    const exact = await this.model
+      .find({
+        ...base,
+        _id: { $nin: excluded },
+        $or: [
+          { usernameNormalized: params.normalizedQuery },
+          { nameNormalized: params.normalizedQuery },
+        ],
+      })
+      .sort(order)
+      .limit(params.cap)
+      .select(select)
+      .lean<Found[]>()
+      .exec();
+
+    const items = exact.slice(params.offset, params.offset + wanted);
+    const missing = wanted - items.length;
+    if (missing <= 0) return items;
+
+    const pattern = { $regex: escapeRegex(params.normalizedQuery) };
+    const rest = await this.model
+      .find({
+        ...base,
+        _id: { $nin: [...excluded, ...exact.map((account) => account._id)] },
+        $or: [{ usernameNormalized: pattern }, { nameNormalized: pattern }],
+      })
+      .sort(order)
+      .skip(Math.max(0, params.offset - exact.length))
+      .limit(missing)
+      .select(select)
+      .lean<Found[]>()
+      .exec();
+    return [...items, ...rest];
   }
 }

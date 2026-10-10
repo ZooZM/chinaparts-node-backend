@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { StandingService } from '../../accounts/standing.service';
+import { HashtagStatsService } from '../hashtags/hashtag-stats.service';
 import { ReelMediaService } from '../media/reel-media.service';
 import { REELS_REPOSITORY } from '../reels.repository';
 import type { ReelSnapshot, ReelsRepository } from '../reels.repository';
@@ -20,25 +21,48 @@ export class ReelLifecycleService {
     @Inject(REELS_REPOSITORY) private readonly reels: ReelsRepository,
     private readonly media: ReelMediaService,
     private readonly standing: StandingService,
+    private readonly hashtags: HashtagStatsService,
   ) {}
 
-  /** A reel passed screening. */
+  /**
+   * A reel passed screening. Its tags count in search from now on. The tags are counted before the
+   * files move: a retry after a failed move finds the reel already published and only moves the
+   * files, so counting first is what makes the count happen exactly once.
+   */
   async onPublished(reel: ReelSnapshot): Promise<void> {
+    await this.hashtags.increment(tagsOf(reel));
     await this.syncMediaVisibility(reel);
   }
 
-  /** A published reel was hidden or rejected. */
-  async onUnpublished(reel: ReelSnapshot): Promise<void> {
+  /**
+   * A reel stopped being published: hidden by reports, or rejected by an operator. Its tags stop
+   * counting, unless it was not published to begin with (an operator rejecting a hidden reel, whose
+   * tags were already taken off when it was hidden).
+   */
+  async onUnpublished(
+    reel: ReelSnapshot,
+    options: { wasPublished?: boolean } = {},
+  ): Promise<void> {
+    if (options.wasPublished !== false) {
+      await this.hashtags.decrement(reel.hashtagsNormalized);
+    }
     await this.syncMediaVisibility(reel);
   }
 
-  /** An operator restored a hidden reel. */
+  /** An operator restored a hidden reel: it is published again, and its tags count again. */
   async onRestored(reel: ReelSnapshot): Promise<void> {
+    await this.hashtags.increment(tagsOf(reel));
     await this.syncMediaVisibility(reel);
   }
 
-  /** The reel was deleted: every copy of its files goes. */
+  /**
+   * The reel was deleted: every copy of its files goes, and its tags stop counting if it was
+   * published. The snapshot is the reel as it was just before the delete.
+   */
   async onDeleted(reel: ReelSnapshot): Promise<void> {
+    if (reel.status === 'published') {
+      await this.hashtags.decrement(reel.hashtagsNormalized);
+    }
     await this.media.deleteAll(reel.media);
   }
 
@@ -62,4 +86,14 @@ export class ReelLifecycleService {
     }
     await this.reels.setMediaLocation(reel.id, target);
   }
+}
+
+/** A reel's hashtags as the dictionary wants them: the matching form and the spelling as typed. */
+function tagsOf(
+  reel: ReelSnapshot,
+): Array<{ normalized: string; display: string }> {
+  return reel.hashtagsNormalized.map((normalized, index) => ({
+    normalized,
+    display: reel.hashtags[index] ?? normalized,
+  }));
 }

@@ -23,6 +23,7 @@ import {
   FollowingUsersQueryDto,
 } from './dto/feed-query.dto';
 import { SearchQueryDto } from './dto/search-query.dto';
+import { HashtagStatsService } from './hashtags/hashtag-stats.service';
 import { ReelLifecycleService } from './lifecycle/reel-lifecycle.service';
 import { ReelPresenter } from './presentation/reel-presenter.service';
 import { ReelsNotificationsService } from './reels-notifications.service';
@@ -59,6 +60,7 @@ export class ReelsService {
     private readonly lifecycle: ReelLifecycleService,
     private readonly notifications: ReelsNotificationsService,
     private readonly limits: LimitsService,
+    private readonly hashtags: HashtagStatsService,
   ) {}
 
   // ── Visibility ───────────────────────────────────────────────────────────
@@ -210,14 +212,20 @@ export class ReelsService {
     return this.presentPage(page, viewer);
   }
 
-  /** Hashtag search, on the normalized form (FR-049, FR-049a). */
+  /**
+   * Hashtag search, on the normalized form (FR-049, FR-049a): a leading `#` does not matter, and
+   * neither do spelling variants, diacritics or digit styles. The matching tags come from the
+   * dictionary, and the reels from an indexed `$in` on them (research R9).
+   */
   async searchReels(
     user: AuthenticatedUser,
     query: SearchQueryDto,
   ): Promise<Page<ReelDto>> {
+    const q = normalizeForMatch(query.q.replace(/^#+/, '')).trim();
+    const tags = await this.hashtags.findMatching(q);
     const page = await this.repository.searchReels({
       viewerId: user.userId,
-      q: normalizeForMatch(query.q),
+      tags,
       cursor: query.cursor,
       limit: this.limits.clampPageSize('feed', query.limit),
       excludeCreatorIds: await this.exclusionSet(user.userId),
@@ -542,7 +550,8 @@ export class ReelsService {
     if (action === 'restore') {
       await this.lifecycle.onRestored(result);
     } else {
-      await this.lifecycle.onUnpublished(result);
+      // The reel was hidden, so its tags were already taken off when it was hidden.
+      await this.lifecycle.onUnpublished(result, { wasPublished: false });
     }
     return { id: result.id, status: result.status };
   }

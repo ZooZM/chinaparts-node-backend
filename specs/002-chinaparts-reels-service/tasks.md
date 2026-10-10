@@ -558,7 +558,7 @@ description: "Task list for the China Parts Reels Service"
 
 ### Tests for User Story 6 ⚠️
 
-- [ ] T079 [P] [US6] Write `test/e2e/search.e2e-spec.ts`.
+- [X] T079 [P] [US6] Write `test/e2e/search.e2e-spec.ts`.
   - **Reel matches**: `اطار` finds `#إطارات`. `2018` finds `#كامري_٢٠١٨`. `oilfilter` finds `#OilFilter`. `فلتر` finds `#فلتر_زيت`.
   - **Refused and excluded**: a whitespace-only `q` gets `400 VALIDATION_FAILED`. Unpublished reels and reels from blocked or suspended accounts are excluded.
   - **Hashtag feed**: EP1 `?hashtag=اطارات` returns reels tagged `#إطارات` and `#اطارات`, each showing its hashtags as typed.
@@ -566,7 +566,7 @@ description: "Task list for the China Parts Reels Service"
 
 ### Implementation for User Story 6
 
-- [ ] T080 [US6] Implement the hashtag dictionary in `src/modules/reels/hashtags/`.
+- [X] T080 [US6] Implement the hashtag dictionary in `src/modules/reels/hashtags/`.
   - **Schema**: `src/modules/reels/hashtags/hashtag-stats.schema.ts` (data-model.md "hashtag_stats").
   - **Repository**: `hashtag-stats.repository.ts`, extending `BaseRepository`.
   - **Service**: `hashtag-stats.service.ts`.
@@ -574,13 +574,13 @@ description: "Task list for the China Parts Reels Service"
     - `decrement(normalizedTags)` runs `$inc -1` and deletes rows that reach 0 or below.
     - `findMatching(normalizedQuery, limit=200)` runs an escaped substring regex on `tag`.
   - **Tests**: `hashtag-stats.service.spec.ts`.
-- [ ] T081 [US6] Wire `HashtagStatsService` into `src/modules/reels/lifecycle/reel-lifecycle.service.ts`.
+- [X] T081 [US6] Wire `HashtagStatsService` into `src/modules/reels/lifecycle/reel-lifecycle.service.ts`.
   - **Increment**: `onPublished` and `onRestored` increment the reel's tags.
   - **Decrement**: `onUnpublished` and `onDeleted` decrement them, the latter only when the snapshot's status was `published`.
   - **Standing**: standing changes never touch the counts.
   - **Tests**: update `reel-lifecycle.service.spec.ts`.
-- [ ] T082 [US6] Rewrite `searchReels` (EP6) in `src/modules/reels/reels-db.repository.ts`. `ReelsService` normalizes `q` and gets the matching tags from `HashtagStatsService.findMatching`. It then passes them to the repository, which queries `{status:'published', hashtagsNormalized:{$in: tags}, creatorId:{$nin: excluded}}` with keyset paging. Update `reels.service.spec.ts`.
-- [ ] T083 [US6] Rewrite `searchUsers` (EP26) in `src/modules/reels/reels-db.repository.ts` per R9.
+- [X] T082 [US6] Rewrite `searchReels` (EP6) in `src/modules/reels/reels-db.repository.ts`. `ReelsService` normalizes `q` and gets the matching tags from `HashtagStatsService.findMatching`. It then passes them to the repository, which queries `{status:'published', hashtagsNormalized:{$in: tags}, creatorId:{$nin: excluded}}` with keyset paging. Update `reels.service.spec.ts`.
+- [X] T083 [US6] Rewrite `searchUsers` (EP26) in `src/modules/reels/reels-db.repository.ts` per R9.
   - **Match**: the normalized query as an escaped substring of `usernameNormalized` or `nameNormalized`.
   - **Exclude**: excluded and blocked accounts, and the `deleted` standing.
   - **Rank**: exact match first, then `followersCount` descending, capped at 200.

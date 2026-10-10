@@ -119,6 +119,9 @@ export interface ReelSnapshot {
   creatorId: string;
   status: ReelStatusValue;
   media: ReelMediaRecord;
+  /** As typed, for the dictionary's display form. */
+  hashtags: string[];
+  /** The matching form of each, in the same order. */
   hashtagsNormalized: string[];
 }
 
@@ -364,16 +367,22 @@ export interface ReelsRepository {
     params: { cursor?: string; limit: number; excludeCreatorIds: string[] },
   ): Promise<Page<ReelRecord>>;
 
-  /** Reels whose normalized hashtags contain `q`. */
+  /**
+   * Published reels carrying any of `tags` (normalized, already matched against the hashtag
+   * dictionary), newest first, keyset paged. Reels of excluded creators are left out.
+   */
   searchReels(params: {
     viewerId: string;
-    q: string;
+    tags: string[];
     cursor?: string;
     limit: number;
     excludeCreatorIds: string[];
   }): Promise<Page<ReelRecord>>;
 
-  /** Accounts whose handle or name contain `q`, excluding the caller and the exclusion set. */
+  /**
+   * Accounts whose handle or name contain `q`, excluding the caller and the exclusion set: an
+   * exact match first, then by follower count, at most 200, paged by an offset cursor.
+   */
   searchUsers(params: {
     viewerId: string;
     q: string;

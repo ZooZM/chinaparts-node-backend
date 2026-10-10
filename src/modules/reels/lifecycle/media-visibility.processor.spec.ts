@@ -15,6 +15,7 @@ function snapshot(id: string): ReelSnapshot {
       thumbnailKey: `reels/${id}/thumb.jpg`,
       location: 'public',
     },
+    hashtags: [],
     hashtagsNormalized: [],
   };
 }

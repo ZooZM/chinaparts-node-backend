@@ -1,4 +1,5 @@
 import { StandingService } from '../../accounts/standing.service';
+import type { HashtagStatsService } from '../hashtags/hashtag-stats.service';
 import { ReelMediaService } from '../media/reel-media.service';
 import type { ReelSnapshot, ReelsRepository } from '../reels.repository';
 import { ReelLifecycleService } from './reel-lifecycle.service';
@@ -9,6 +10,7 @@ function snapshot(overrides: Partial<ReelSnapshot> = {}): ReelSnapshot {
     creatorId: 'creator',
     status: 'published',
     media: { videoKey: 'v', thumbnailKey: 't', location: 'private' },
+    hashtags: ['A'],
     hashtagsNormalized: ['a'],
     ...overrides,
   };
@@ -22,12 +24,17 @@ function setup(excluded = false) {
     deleteAll: jest.fn().mockResolvedValue(undefined),
   };
   const standing = { isExcluded: jest.fn().mockResolvedValue(excluded) };
+  const hashtags = {
+    increment: jest.fn().mockResolvedValue(undefined),
+    decrement: jest.fn().mockResolvedValue(undefined),
+  };
   const service = new ReelLifecycleService(
     reels as unknown as ReelsRepository,
     media as unknown as ReelMediaService,
     standing as unknown as StandingService,
+    hashtags as unknown as HashtagStatsService,
   );
-  return { service, reels, media, standing };
+  return { service, reels, media, standing, hashtags };
 }
 
 const at = (location: 'private' | 'public') => ({
@@ -158,6 +165,91 @@ describe('ReelLifecycleService (research R12, R22)', () => {
       const reel = snapshot({ status: 'pending_moderation' });
       await service.onDeleted(reel);
       expect(media.deleteAll).toHaveBeenCalledWith(reel.media);
+    });
+  });
+
+  describe('the hashtag dictionary (research R9)', () => {
+    const tagsA = { normalized: 'a', display: 'A' };
+
+    it("onPublished counts the reel's tags, with their spelling as typed", async () => {
+      const { service, hashtags } = setup(false);
+      await service.onPublished(
+        snapshot({
+          hashtags: ['إطارات', 'Oil'],
+          hashtagsNormalized: ['اطارات', 'oil'],
+        }),
+      );
+      expect(hashtags.increment).toHaveBeenCalledWith([
+        { normalized: 'اطارات', display: 'إطارات' },
+        { normalized: 'oil', display: 'Oil' },
+      ]);
+    });
+
+    it('counts before it moves the files, so a retry after a failed move does not count twice', async () => {
+      const { service, media, hashtags } = setup(false);
+      const order: string[] = [];
+      hashtags.increment.mockImplementation(() => {
+        order.push('count');
+        return Promise.resolve();
+      });
+      media.publish.mockImplementation(() => {
+        order.push('files');
+        return Promise.resolve();
+      });
+
+      await service.onPublished(snapshot(at('private')));
+
+      expect(order).toEqual(['count', 'files']);
+    });
+
+    it('onRestored counts the tags again', async () => {
+      const { service, hashtags } = setup(false);
+      await service.onRestored(snapshot());
+      expect(hashtags.increment).toHaveBeenCalledWith([tagsA]);
+    });
+
+    it('onUnpublished takes the tags off a reel that was published', async () => {
+      const { service, hashtags } = setup(false);
+      await service.onUnpublished(
+        snapshot({ status: 'hidden', ...at('public') }),
+      );
+      expect(hashtags.decrement).toHaveBeenCalledWith(['a']);
+    });
+
+    it('onUnpublished leaves the tags alone for an operator rejecting a reel that was already hidden', async () => {
+      const { service, hashtags, media } = setup(false);
+      await service.onUnpublished(
+        snapshot({ status: 'rejected', ...at('public') }),
+        {
+          wasPublished: false,
+        },
+      );
+      expect(hashtags.decrement).not.toHaveBeenCalled();
+      expect(media.unpublish).toHaveBeenCalledTimes(1);
+    });
+
+    it('onDeleted takes the tags off only if the reel was published', async () => {
+      const { service, hashtags, media } = setup(false);
+
+      await service.onDeleted(snapshot({ status: 'published' }));
+      expect(hashtags.decrement).toHaveBeenCalledTimes(1);
+
+      for (const status of [
+        'pending_moderation',
+        'rejected',
+        'hidden',
+      ] as const) {
+        await service.onDeleted(snapshot({ status }));
+      }
+      expect(hashtags.decrement).toHaveBeenCalledTimes(1);
+      expect(media.deleteAll).toHaveBeenCalledTimes(4);
+    });
+
+    it("never touches the tags when only the creator's standing changes", async () => {
+      const { service, hashtags } = setup(true);
+      await service.syncMediaVisibility(snapshot(at('public')));
+      expect(hashtags.increment).not.toHaveBeenCalled();
+      expect(hashtags.decrement).not.toHaveBeenCalled();
     });
   });
 });
