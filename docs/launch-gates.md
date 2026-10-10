@@ -139,8 +139,8 @@ describes. None changes a requirement, but each one is a thing to prove on stagi
 5. **The screening provider is the stub.** `MODERATION_PROVIDER=stub` everywhere until G1 is done.
 6. **`/health/ready` returning 503 with MySQL stopped** is covered by the unit test only. Stopping the
    throwaway MySQL in the middle of the end-to-end suite would break every test after it, so this one is
-   worth doing by hand on staging: stop the read replica's route and check the 503 and the 503
-   `UPSTREAM_UNAVAILABLE` for a signed-in request.
+   worth doing by hand on staging: cut the service's route to China Parts' MySQL, then check that
+   `/health/ready` answers 503 `NOT_READY` and that a signed-in request answers 503 `UPSTREAM_UNAVAILABLE`.
 7. **The standing sync is triggered directly in tests** instead of waiting for its schedule. The
    15-minute bound of SC-007 therefore rests on `ACCOUNT_SYNC_INTERVAL_MINUTES` (5 by default) plus the
    media job that follows it. Confirm on staging: suspend a seller in China Parts and time how long
