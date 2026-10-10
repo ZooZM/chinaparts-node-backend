@@ -9,7 +9,8 @@ import { ErrorCode } from '../../common/errors/error-codes';
 import type { AccountType, Locale } from '../../common/http/viewer-request';
 import { normalizeForMatch } from '../../common/text/normalize-for-match';
 import type { ChinaPartsAccount } from '../china-parts/chinaparts-accounts.repository';
-import { AccountsRepository, DisplayUpdate } from './accounts.repository';
+import { toDisplay } from './account-display';
+import { AccountsRepository } from './accounts.repository';
 import { generateHandleBase, isValidHandle, withSuffix } from './handle.util';
 import type { ReelsAccountLean } from './schemas/reels-account.schema';
 
@@ -31,17 +32,6 @@ const BIO_MAX_LENGTH = 150;
 /** `_2`, `_3`, ... up to `_21` (research R6), then a few random suffixes for crowded names. */
 const SEQUENTIAL_SUFFIXES = 20;
 const RANDOM_SUFFIXES = 5;
-
-function toDisplay(account: ChinaPartsAccount): DisplayUpdate {
-  return {
-    name: account.name,
-    nameNormalized: normalizeForMatch(account.name),
-    avatarUrl: account.avatarUrl,
-    standing: account.standing,
-    preferredCurrency: account.preferredCurrency,
-    syncedAt: new Date(),
-  };
-}
 
 function toMe(account: ReelsAccountLean): MeDto {
   return {

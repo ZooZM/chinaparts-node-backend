@@ -6,6 +6,10 @@ import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AccountsService } from '../../src/modules/accounts/accounts.service';
+import {
+  StandingSyncProcessor,
+  SyncResult,
+} from '../../src/modules/accounts/standing-sync.processor';
 import { ChinaPartsAccountsRepository } from '../../src/modules/china-parts/chinaparts-accounts.repository';
 import { ReelLifecycleService } from '../../src/modules/reels/lifecycle/reel-lifecycle.service';
 import { REELS_REPOSITORY } from '../../src/modules/reels/reels.repository';
@@ -160,6 +164,14 @@ export function notificationEventModel(
   return testApp.app.get<Model<NotificationEventDocument>>(
     getModelToken(NotificationEvent.name),
   );
+}
+
+/**
+ * Runs one standing sync now, and waits for it. The repeating job is paused for the suites that
+ * call this, so the schedule never races a test.
+ */
+export function runSync(testApp: TestApp): Promise<SyncResult> {
+  return testApp.app.get(StandingSyncProcessor).runOnce();
 }
 
 /** Waits until a queue has nothing waiting, active or delayed, so a test can assert on the outcome. */

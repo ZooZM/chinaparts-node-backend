@@ -1,8 +1,11 @@
+import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { PassportModule } from '@nestjs/passport';
 import { REQUEST_AUTHENTICATOR } from '../../common/guards/request-authenticator';
+import { QUEUE_ACCOUNTS_SYNC } from '../../common/queues/queue-names';
 import { ChinaPartsModule } from '../china-parts/china-parts.module';
+import { AccountsController } from './accounts.controller';
 import { AccountsRepository } from './accounts.repository';
 import { AccountsService } from './accounts.service';
 import { ChinaPartsAuthGuard } from './china-parts-auth.guard';
@@ -13,6 +16,7 @@ import {
   ReelsAccountSchema,
 } from './schemas/reels-account.schema';
 import { StandingService } from './standing.service';
+import { StandingSyncProcessor } from './standing-sync.processor';
 
 /**
  * Reels identities (research R5 to R7) and the China Parts sign-in. Other modules reach accounts
@@ -23,13 +27,16 @@ import { StandingService } from './standing.service';
     MongooseModule.forFeature([
       { name: ReelsAccount.name, schema: ReelsAccountSchema },
     ]),
+    BullModule.registerQueue({ name: QUEUE_ACCOUNTS_SYNC }),
     PassportModule,
     ChinaPartsModule,
   ],
+  controllers: [AccountsController],
   providers: [
     AccountsRepository,
     AccountsService,
     StandingService,
+    StandingSyncProcessor,
     ChinaPartsTokenStrategy,
     ChinaPartsAuthGuard,
     PassportAuthenticator,
@@ -39,6 +46,7 @@ import { StandingService } from './standing.service';
     AccountsRepository,
     AccountsService,
     StandingService,
+    StandingSyncProcessor,
     REQUEST_AUTHENTICATOR,
   ],
 })

@@ -276,24 +276,24 @@ description: "Task list for the China Parts Reels Service"
 
 ### Tests for User Story 1 ⚠️
 
-- [ ] T044 [P] [US1] Write `test/e2e/feed.e2e-spec.ts`.
+- [X] T044 [P] [US1] Write `test/e2e/feed.e2e-spec.ts`.
   - **Paging (FR-019)**: page through 30 reels with limit 10 while inserting 3 new reels between pages, and assert no duplicates or skips within the pass.
   - **Page size**: no `limit` returns 10, and `limit=100` returns 25 (clamped).
   - **Looping (FR-020)**: the pass ends, the loop continues, and `nextCursor` is never null.
   - **Cursor**: a tampered cursor returns `400 INVALID_CURSOR`.
   - **Visibility (FR-021)**: non-owners never see pending, rejected, or hidden reels. The owner does.
   - **Views (FR-024)**: a signed-in view counts once.
-- [ ] T045 [P] [US1] Write `test/e2e/guest.e2e-spec.ts` for SC-014 and FR-004.
+- [X] T045 [P] [US1] Write `test/e2e/guest.e2e-spec.ts` for SC-014 and FR-004.
   - **Allowed signed out**: EP1, EP9, EP18, EP20, EP27, and EP5 with `userId` all succeed. EP5 without `userId` returns `400 VALIDATION_FAILED`.
   - **Guest views**: EP16 with `X-Installation-Id` counts once per installation.
   - **Sign-in required**: EP13 (like), EP2, and EP6 return `401 AUTH_REQUIRED`.
   - **Invalid header**: an invalid `Authorization` on EP1 returns `401 AUTH_INVALID_SESSION`. With MySQL stopped, an uncached token on EP1 returns `503 UPSTREAM_UNAVAILABLE`.
   - **Rate limit**: exceeding `GUEST_RATE_LIMIT_PER_MINUTE` (set to 5) returns `429 RATE_LIMITED`.
-- [ ] T046 [P] [US1] Write `test/e2e/identity-collision.e2e-spec.ts` for SC-005. Using customer 1 and seller 1 (same number), check that:
+- [X] T046 [P] [US1] Write `test/e2e/identity-collision.e2e-spec.ts` for SC-005. Using customer 1 and seller 1 (same number), check that:
   - `GET /api/users/me` returns two different ids and account types
   - a like by one never shows `viewerLiked` for the other
   - their Liked and Saved lists are disjoint
-- [ ] T047 [P] [US1] Write `test/e2e/standing.e2e-spec.ts` for FR-009, FR-010 detection, FR-014, and SC-007.
+- [X] T047 [P] [US1] Write `test/e2e/standing.e2e-spec.ts` for FR-009, FR-010 detection, FR-014, and SC-007.
   - **Suspension**: set seller 1 to `suspended` through `rootQuery` and call `runSync()`.
     - Seller 1's reels disappear from EP1 and EP9 for customer 1, but stay visible to seller 1 with their status.
     - Seller 1's likes return `403 ACCOUNT_NOT_IN_GOOD_STANDING`.
@@ -306,26 +306,26 @@ description: "Task list for the China Parts Reels Service"
 
 ### Implementation for User Story 1
 
-- [ ] T048 [P] [US1] Implement `src/modules/reels/feed/feed-cursor.ts` per R9.
-  - **API**: `encode({ pass, createdAt, id, injected? })` and `decode(cursor)` as base64url JSON. `injected` is stored as concatenated 12-byte ids in base64url.
+- [X] T048 [P] [US1] Implement `src/modules/reels/feed/feed-cursor.ts` per R9.
+  - **API**: `encodeFeedCursor({ pass, createdAt, id, injected? })` and `decodeFeedCursor(cursor)`, plus `decodeListCursor(cursor)` for lists that end (pass 0, nothing injected). The header is base64url JSON; `injected` follows after a `.` as concatenated 12-byte ids in base64url, so each part is encoded once.
   - **Errors**: a malformed or unverifiable cursor throws `400 INVALID_CURSOR`.
   - **Tests**: add `feed-cursor.spec.ts`, including a 50-id `injected` list under 1 KB.
-- [ ] T049 [US1] Rewrite `listFeed` in `src/modules/reels/reels-db.repository.ts` per R9. The repository receives `excludedIds` and `limit` as parameters and calls no service.
+- [X] T049 [US1] Rewrite `listFeed` in `src/modules/reels/reels-db.repository.ts` per R9. The repository receives `excludedIds` and `limit` as parameters and calls no service.
   - **Paging**: remove the load-the-whole-catalog branch. The For You feed uses keyset paging (`(createdAt,_id) < cursor`, sorted `{createdAt:-1,_id:-1}`, limit+1) on `{status:'published', creatorId:{$nin: excluded}}`.
   - **Looping**: when a pass runs out, continue from the top with `pass+1`, skipping ids already on the page.
   - **Reposts**: seed only the first page of pass 0 with the 50 most recent followee reposts. Return their ids in the cursor's `injected` list, and apply `_id $nin injected` on every later page of pass 0. Drop the list from pass 1.
   - **Scoped feeds**: creator and hashtag feeds use keyset paging and end (`nextCursor:null`). The hashtag filter matches `hashtagsNormalized` with `normalizeForMatch(hashtag)`.
   - **Page size**: `ReelsService` passes `LimitsService.clampPageSize('feed', limit)`.
-- [ ] T050 [US1] Add guest views in `src/modules/reels/schemas/reel-guest-view.schema.ts`, `src/modules/reels/reels-db.repository.ts`, and `src/modules/reels/reels.service.ts`.
+- [X] T050 [US1] Add guest views in `src/modules/reels/schemas/reel-guest-view.schema.ts`, `src/modules/reels/reels-db.repository.ts`, and `src/modules/reels/reels.service.ts`.
   - **Schema**: `src/modules/reels/schemas/reel-guest-view.schema.ts` (data-model.md "reel_guest_views"), registered in `reels.module.ts`.
   - **Repository**: add `recordGuestView(reelId, installationId)` to `reels-db.repository.ts`. It inserts if absent and increments `viewsCount` only on a real insert.
   - **Service**: update `recordView` in `src/modules/reels/reels.service.ts`. Signed-in views use the ported per-account path, guest views with an `installationId` use the guest path, and guest views without one do nothing (FR-024). Update `reels.service.spec.ts`.
-- [ ] T051 [US1] In `src/modules/reels/reels.service.ts`, replace `getBlockSet(viewerId)` with `getExclusionSet(viewer?)`. It returns the viewer's mutual block set (none for guests) together with `StandingService.members()`.
+- [X] T051 [US1] In `src/modules/reels/reels.service.ts`, replace `getBlockSet(viewerId)` with `getExclusionSet(viewer?)`. It returns the viewer's mutual block set (none for guests) together with `StandingService.members()`.
   - **Coverage**: pass it to every read in `reels.service.ts`: feeds, `getReel`, comments, profiles, Liked, Saved, Reposted, reposters, and search.
   - **Single reels**: `getReel` returns `404 REEL_NOT_FOUND` to non-owners when the creator is excluded.
   - **Comments**: `getComments` drops comments whose `authorId` is excluded (FR-009).
   - **Tests**: update `reels.service.spec.ts`.
-- [ ] T052 [US1] Implement `src/modules/accounts/standing-sync.processor.ts` per R7, with the BullMQ queue `ACCOUNTS_SYNC` repeating every `ACCOUNT_SYNC_INTERVAL_MINUTES`, registered only for the worker role.
+- [X] T052 [US1] Implement `src/modules/accounts/standing-sync.processor.ts` per R7, with the BullMQ queue `ACCOUNTS_SYNC` repeating every `ACCOUNT_SYNC_INTERVAL_MINUTES`, registered only for the worker role.
   - **Full re-read**: page through every account with `AccountsRepository.listByType` in batches of 1,000, and read them through `getCustomers` and `getSellers`. Update display fields, `preferredCurrency`, and standing.
   - **Missing rows**: the first miss sets `missingSince`. A miss on the next cycle marks the account `deleted`. A found row clears `missingSince`.
   - **Breaker**: if more than 10 accounts **and** more than `SYNC_MAX_MISSING_RATIO` of those checked are missing, change nothing for missing rows and log an error.
@@ -334,13 +334,13 @@ description: "Task list for the China Parts Reels Service"
   - **Upstream errors**: if any China Parts query fails, stop the run without marking anything missing or changing any standing, and let the next scheduled run start over (R7).
   - **Exports**: `runOnce(): Promise<{ changedStanding: string[]; newlyDeleted: string[] }>` for tests and for the hooks added in T060 and T101.
   - **Tests**: `standing-sync.processor.spec.ts`.
-- [ ] T053 [US1] Open the signed-out routes in `src/modules/reels/reels.controller.ts` and `src/modules/reels/reels-users.controller.ts`.
+- [X] T053 [US1] Open the signed-out routes in `src/modules/reels/reels.controller.ts` and `src/modules/reels/reels-users.controller.ts`.
   - **Access**: set `@Access('optional')` and `@Viewer()` on EP1, EP5, EP9, EP16, EP18, EP20, and EP27.
   - **Services**: make the matching methods in `reels.service.ts` accept `viewer: { user?: AuthenticatedUser; installationId?: string }`.
     - For guests, every `viewer*` flag is false, there is no repost injection, and `repostersCount` is 0 with `topReposters` empty.
     - EP5's query DTO requires `userId` for guests, returning `400 VALIDATION_FAILED` otherwise.
   - **Tests**: update `reels.service.spec.ts`.
-- [ ] T054 [US1] Implement EP24, `GET /api/users/me`, in `src/modules/accounts/accounts.controller.ts`. It carries `@Access('signed-in')` and returns `{ id, accountType, username, name, avatarUrl, bio, locale, followersCount, followingCount, totalLikes }`. Register the controller in `accounts.module.ts`.
+- [X] T054 [US1] Implement EP24, `GET /api/users/me`, in `src/modules/accounts/accounts.controller.ts`. It carries `@Access('signed-in')` and returns `{ id, accountType, username, name, avatarUrl, bio, locale, followersCount, followingCount, totalLikes }`. Register the controller in `accounts.module.ts`.
 
 **Checkpoint**: The MVP works. China Parts users and signed-out visitors can watch reels.
 

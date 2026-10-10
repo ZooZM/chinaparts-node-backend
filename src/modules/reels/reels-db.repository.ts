@@ -5,6 +5,13 @@ import { ErrorCode } from '../../common/errors/error-codes';
 import { isDuplicateKeyError } from '../../common/mongo/duplicate-key';
 import { escapeRegex } from '../../common/text/escape-regex';
 import { AccountsRepository } from '../accounts/accounts.repository';
+import {
+  decodeFeedCursor,
+  decodeListCursor,
+  encodeFeedCursor,
+  FEED_TOP,
+  MAX_INJECTED,
+} from './feed/feed-cursor';
 import { Follow, FollowDocument } from './schemas/follow.schema';
 import {
   NotificationEvent,
@@ -61,16 +68,6 @@ const REPORT_REASONS: Record<ReelReportReasonValue, ReelReportReason> = {
   other: ReelReportReason.OTHER,
 };
 
-/** One viewer-relevant reposter (followed accounts plus the viewer) for the badge stack. */
-type RepostReposter = AccountSummary;
-
-/** Per-video repost attribution: the primary label, the avatar stack, and the relevant count. */
-interface RepostAttribution {
-  primary: RepostReposter;
-  top: RepostReposter[];
-  count: number;
-}
-
 type AccountLookup = {
   _id: Types.ObjectId;
   username?: string;
@@ -98,6 +95,11 @@ function mediaOf(reel: Pick<ReelLean, 'media'>): ReelMediaRecord {
   };
 }
 
+/** Where a reel sits in a newest-first list, for a cursor that continues after it. */
+function positionOf(reel: ReelLean): { createdAt: Date; id: string } {
+  return { createdAt: reel.createdAt ?? new Date(0), id: reel._id.toString() };
+}
+
 function snapshotOf(reel: ReelLean): ReelSnapshot {
   return {
     id: reel._id.toString(),
@@ -122,9 +124,9 @@ function summaryOf(account: AccountLookup): AccountSummary {
  * a service, never builds a media URL, and returns the outcome of any status change for the
  * caller to act on.
  *
- * Cursor convention for now: an opaque, ever-increasing integer offset encoded as a string. The
- * main feed wraps the offset modulo the catalog size so `nextCursor` is never null; scoped feeds
- * and lists are finite. The keyset cursors of research R9 replace this story by story.
+ * Cursors: the feeds (For You, creator, hashtag) use the keyset cursors of research R9, through
+ * `feed-cursor.ts`. The other lists still use an opaque, ever-increasing integer offset encoded as
+ * a string, and move to keyset paging story by story.
  */
 @Injectable()
 export class ReelsDbRepository implements ReelsRepository {
@@ -286,92 +288,68 @@ export class ReelsDbRepository implements ReelsRepository {
   }
 
   /**
-   * Reels reposted by accounts the viewer follows (or the viewer themselves), attributed to the
-   * most recent qualifying reposter per reel. Reposter-edge blocks are applied here, independent
-   * of the creator-edge `excludeCreatorIds` filter the caller also applies. "Still followed" is
-   * implicit: followee ids are read fresh on every call, so an unfollow removes the injection on
-   * the very next request.
+   * The accounts whose reposts a viewer sees: the ones they follow, and themselves. Read fresh on
+   * every request, so an unfollow removes a repost from the feed on the very next one. A signed-out
+   * visitor has none.
    */
-  private async getRepostAttributions(
+  private async repostSourceIds(
     viewerId: string,
-    excludeCreatorIds: string[],
-  ): Promise<Map<string, RepostAttribution>> {
+    extra: string[] = [],
+  ): Promise<Types.ObjectId[]> {
     const viewerObjectId = toObjectId(viewerId);
-    if (!viewerObjectId) return new Map();
-
+    if (!viewerObjectId) return [];
     const follows = await this.followModel
       .find({ followerId: viewerObjectId })
       .select({ followeeId: 1 })
       .lean<Array<{ followeeId: Types.ObjectId }>>()
       .exec();
-    const reposterIds = toObjectIds([
-      ...new Set([...follows.map((f) => f.followeeId.toString()), viewerId]),
-    ]);
-    if (reposterIds.length === 0) return new Map();
-
-    const reposts = await this.repostModel
-      .find({ reposterId: { $in: reposterIds } })
-      .sort({ createdAt: -1 })
-      .lean<Array<{ videoId: Types.ObjectId; reposterId: Types.ObjectId }>>()
-      .exec();
-    if (reposts.length === 0) return new Map();
-
-    // Collect every relevant reposter per video, most recent first: the badge shows a count and a
-    // few avatars.
-    const repostsByVideo = new Map<string, typeof reposts>();
-    for (const repost of reposts) {
-      const key = repost.videoId.toString();
-      const list = repostsByVideo.get(key);
-      if (list) list.push(repost);
-      else repostsByVideo.set(key, [repost]);
-    }
-
-    const videoIds = toObjectIds([...repostsByVideo.keys()]);
-    const reposterIdsNeeded = [
-      ...new Set(reposts.map((r) => r.reposterId.toString())),
-    ];
-
-    const [reels, reposterAccounts] = await Promise.all([
-      this.reelModel
-        .find({
-          _id: { $in: videoIds },
-          ...this.excludeFilter(excludeCreatorIds),
-          status: ReelStatus.PUBLISHED,
-        })
-        .select({ _id: 1 })
-        .lean<Array<{ _id: Types.ObjectId }>>()
-        .exec(),
-      this.accounts.findByIdsLean(reposterIdsNeeded, [
-        'username',
-        'name',
-        'avatarUrl',
+    return toObjectIds([
+      ...new Set([
+        ...follows.map((f) => f.followeeId.toString()),
+        viewerId,
+        ...extra,
       ]),
     ]);
-    const visibleVideoIds = new Set(reels.map((r) => r._id.toString()));
-    const excludeReposterSet = new Set(excludeCreatorIds);
-    const reposterById = new Map(
-      reposterAccounts.map((account) => [account._id.toString(), account]),
-    );
+  }
 
-    const attributions = new Map<string, RepostAttribution>();
-    for (const [videoId, list] of repostsByVideo) {
-      if (!visibleVideoIds.has(videoId)) continue; // source no longer published, or blocked
-      const relevant: RepostReposter[] = [];
-      for (const repost of list) {
-        const reposterId = repost.reposterId.toString();
-        if (excludeReposterSet.has(reposterId)) continue; // reposter-edge block
-        const reposter = reposterById.get(reposterId);
-        if (!reposter) continue;
-        relevant.push(summaryOf(reposter));
-      }
-      if (relevant.length === 0) continue;
-      attributions.set(videoId, {
-        primary: relevant[0],
-        top: relevant.slice(0, 3),
-        count: relevant.length,
-      });
-    }
-    return attributions;
+  /**
+   * The reels to put at the top of the first For You page (FR-017): published reels that someone
+   * the viewer follows (or the viewer) reposted, most recently reposted first, from at most the
+   * `MAX_INJECTED` latest reposts. A reposter the viewer blocked, and a reel whose creator is
+   * excluded, never qualify (FR-078).
+   */
+  private async repostSeeds(
+    sourceIds: Types.ObjectId[],
+    excludeCreatorIds: string[],
+    limit: number,
+  ): Promise<ReelLean[]> {
+    const excluded = new Set(excludeCreatorIds);
+    const reposters = sourceIds.filter((id) => !excluded.has(id.toString()));
+    if (reposters.length === 0) return [];
+
+    const reposts = await this.repostModel
+      .find({ reposterId: { $in: reposters } })
+      .sort({ createdAt: -1, _id: -1 })
+      .limit(MAX_INJECTED)
+      .select({ videoId: 1 })
+      .lean<Array<{ videoId: Types.ObjectId }>>()
+      .exec();
+    const candidates = [...new Set(reposts.map((r) => r.videoId.toString()))];
+    if (candidates.length === 0) return [];
+
+    const reels = await this.reelModel
+      .find({
+        _id: { $in: toObjectIds(candidates) },
+        status: ReelStatus.PUBLISHED,
+        ...this.excludeFilter(excludeCreatorIds),
+      })
+      .lean<ReelLean[]>()
+      .exec();
+    const byId = new Map(reels.map((reel) => [reel._id.toString(), reel]));
+    return candidates
+      .map((id) => byId.get(id))
+      .filter((reel): reel is ReelLean => reel !== undefined)
+      .slice(0, limit);
   }
 
   // ── ReelsRepository ─────────────────────────────────────────────────────
@@ -412,6 +390,12 @@ export class ReelsDbRepository implements ReelsRepository {
     return hydrated;
   }
 
+  /**
+   * The For You feed, or a creator or hashtag feed (research R9).
+   *
+   * The scoped feeds end. For You never does (FR-020): it is passed through the catalog newest
+   * first, and when a pass runs out the page is filled from the top of the next one.
+   */
   async listFeed(params: {
     viewerId: string;
     cursor?: string;
@@ -420,99 +404,189 @@ export class ReelsDbRepository implements ReelsRepository {
     hashtag?: string;
     excludeCreatorIds: string[];
   }): Promise<Page<ReelRecord>> {
-    const offset = this.parseCursor(params.cursor);
-    const filter: Record<string, unknown> = {};
+    return params.creatorId || params.hashtag
+      ? this.listScopedFeed(params)
+      : this.listForYou(params);
+  }
 
+  /**
+   * `(createdAt, _id)` strictly before a position: the next page of a newest-first list. It is a
+   * keyset condition, so it uses the `{status, createdAt, _id}` indexes at any depth.
+   */
+  private before(position: {
+    createdAt: Date;
+    id: string;
+  }): Record<string, unknown> {
+    return {
+      $or: [
+        { createdAt: { $lt: position.createdAt } },
+        {
+          createdAt: position.createdAt,
+          _id: { $lt: new Types.ObjectId(position.id) },
+        },
+      ],
+    };
+  }
+
+  /** A creator's reels or a hashtag's reels: finite, owners see their own in every state. */
+  private async listScopedFeed(params: {
+    viewerId: string;
+    cursor?: string;
+    limit: number;
+    creatorId?: string;
+    hashtag?: string;
+    excludeCreatorIds: string[];
+  }): Promise<Page<ReelRecord>> {
+    // A bad cursor is the caller's mistake whatever the scope turns out to hold.
+    const position = decodeListCursor(params.cursor);
+    const empty: Page<ReelRecord> = { items: [], nextCursor: null };
+
+    const scope: Record<string, unknown> = {};
     if (params.creatorId) {
-      // A specific creatorId and the $nin exclusion both target the same field and cannot be
-      // merged. If the requested creator is excluded the scoped feed is simply empty; otherwise
-      // filter by the exact id.
-      if (params.excludeCreatorIds.includes(params.creatorId)) {
-        return { items: [], nextCursor: null };
-      }
+      // A specific creator and the exclusion both target `creatorId` and cannot be merged: an
+      // excluded creator's feed is simply empty.
+      if (params.excludeCreatorIds.includes(params.creatorId)) return empty;
       const creatorObjectId = toObjectId(params.creatorId);
-      if (!creatorObjectId) return { items: [], nextCursor: null };
-      filter.creatorId = creatorObjectId;
+      if (!creatorObjectId) return empty;
+      scope.creatorId = creatorObjectId;
     } else {
-      Object.assign(filter, this.excludeFilter(params.excludeCreatorIds));
+      Object.assign(scope, this.excludeFilter(params.excludeCreatorIds));
     }
-    if (params.hashtag) {
-      filter.hashtagsNormalized = params.hashtag;
-    }
-    // Published, or mine: composes with whichever of the filters above are already set.
-    Object.assign(filter, this.visibilityFilter(params.viewerId));
+    if (params.hashtag) scope.hashtagsNormalized = params.hashtag;
 
-    const isScoped = Boolean(params.creatorId || params.hashtag);
-    const total = await this.reelModel.countDocuments(filter).exec();
-    if (total === 0) return { items: [], nextCursor: null };
+    const conditions: Record<string, unknown>[] = [
+      scope,
+      this.visibilityFilter(params.viewerId),
+    ];
+    if (position) conditions.push(this.before(position));
 
-    if (isScoped) {
-      // Finite: creator-scoped and hashtag-scoped feeds terminate.
-      const docs = await this.reelModel
-        .find(filter)
-        .sort({ createdAt: -1, _id: -1 })
-        .skip(offset)
-        .limit(params.limit)
-        .lean<ReelLean[]>()
-        .exec();
-      const nextOffset = offset + params.limit;
-      return {
-        items: await this.hydrate(docs, params.viewerId),
-        nextCursor: nextOffset < total ? String(nextOffset) : null,
-      };
-    }
-
-    // The main feed loops the catalog indefinitely: nextCursor is never null.
-    const sorted = await this.reelModel
-      .find(filter)
+    // One more than the page, to know whether there is a next one without counting.
+    const docs = await this.reelModel
+      .find({ $and: conditions })
       .sort({ createdAt: -1, _id: -1 })
+      .limit(params.limit + 1)
       .lean<ReelLean[]>()
       .exec();
+    const page = docs.slice(0, params.limit);
+    const last = page[page.length - 1];
+    return {
+      items: await this.hydrate(page, params.viewerId),
+      nextCursor:
+        docs.length > params.limit && last
+          ? encodeFeedCursor({
+              pass: 0,
+              createdAt: last.createdAt ?? new Date(0),
+              id: last._id.toString(),
+            })
+          : null,
+    };
+  }
 
-    // This IS the For You feed: merge in followees' (and the viewer's own) reposts. Scoped feeds
-    // never reach this branch, so Following has no reposts and creator/hashtag feeds stay pure.
-    const attributions = await this.getRepostAttributions(
-      params.viewerId,
+  /**
+   * For You: published reels, newest first, from creators the viewer may see (FR-017), looping
+   * (FR-020).
+   *
+   * - The first page of the first pass opens with the reels that followed accounts reposted. Their
+   *   ids travel in the cursor and are skipped for the rest of the pass, so each is shown once.
+   * - A pass is the catalog from the top to the bottom. When it runs out, the page is topped up
+   *   from the top of the next pass, skipping what the page already has.
+   * - The only time the cursor is `null` is a catalog with nothing in it.
+   */
+  private async listForYou(params: {
+    viewerId: string;
+    cursor?: string;
+    limit: number;
+    excludeCreatorIds: string[];
+  }): Promise<Page<ReelRecord>> {
+    const cursor =
+      params.cursor === undefined ? undefined : decodeFeedCursor(params.cursor);
+    const published: Record<string, unknown> = {
+      status: ReelStatus.PUBLISHED,
+      ...this.excludeFilter(params.excludeCreatorIds),
+    };
+    const sourceIds = await this.repostSourceIds(params.viewerId);
+
+    let pass = cursor?.pass ?? 0;
+    let injected = cursor?.injected ?? [];
+    let position = cursor
+      ? { createdAt: cursor.createdAt, id: cursor.id }
+      : FEED_TOP;
+
+    const items: ReelLean[] = [];
+    if (!cursor) {
+      const seeds = await this.repostSeeds(
+        sourceIds,
+        params.excludeCreatorIds,
+        params.limit,
+      );
+      items.push(...seeds);
+      injected = seeds.map((seed) => seed._id.toString());
+    }
+
+    // `limit(0)` means "no limit" to MongoDB, so a page already full of seeds must not ask.
+    const find = (
+      condition: Record<string, unknown>,
+      take: number,
+    ): Promise<ReelLean[]> =>
+      take > 0
+        ? this.reelModel
+            .find({ $and: [published, condition] })
+            .sort({ createdAt: -1, _id: -1 })
+            .limit(take)
+            .lean<ReelLean[]>()
+            .exec()
+        : Promise.resolve([]);
+    const skip = (): Types.ObjectId[] =>
+      toObjectIds([
+        ...items.map((item) => item._id.toString()),
+        ...(pass === 0 ? injected : []),
+      ]);
+
+    // The rest of the current pass, after the cursor.
+    const rest = await find(
+      { ...this.before(position), _id: { $nin: skip() } },
+      params.limit - items.length,
+    );
+    items.push(...rest);
+    if (rest.length > 0) position = positionOf(rest[rest.length - 1]);
+
+    // The pass ran out: carry on from the top of the next one.
+    if (items.length < params.limit) {
+      pass += 1;
+      injected = [];
+      position = FEED_TOP;
+      const wrapped = await find(
+        { _id: { $nin: skip() } },
+        params.limit - items.length,
+      );
+      items.push(...wrapped);
+      if (wrapped.length > 0)
+        position = positionOf(wrapped[wrapped.length - 1]);
+    }
+
+    if (items.length === 0) return { items: [], nextCursor: null };
+
+    const records = await this.hydrate(items, params.viewerId);
+    const reposters = await this.getRelevantRepostersForVideos(
+      records.map((record) => record.id),
+      sourceIds,
       params.excludeCreatorIds,
     );
-
-    const docs: ReelLean[] = [];
-    const byId = new Map(sorted.map((d) => [d._id.toString(), d]));
-    if (offset === 0 && attributions.size > 0) {
-      // Reposts are surfaced with priority on the very first page.
-      const seeded = new Set<string>();
-      for (const [videoId] of attributions) {
-        if (docs.length >= params.limit) break;
-        const doc = byId.get(videoId);
-        if (!doc || seeded.has(videoId)) continue;
-        docs.push(doc);
-        seeded.add(videoId);
-      }
-      for (let i = 0; docs.length < params.limit && i < sorted.length; i++) {
-        const doc = sorted[i % sorted.length];
-        const id = doc._id.toString();
-        if (seeded.has(id)) continue;
-        docs.push(doc);
-        seeded.add(id);
-      }
-    } else {
-      for (let i = 0; i < params.limit; i++) {
-        docs.push(sorted[(offset + i) % sorted.length]);
-      }
+    for (const record of records) {
+      const list = reposters.get(record.id);
+      if (!list || list.length === 0) continue;
+      record.repostedBy = list[0];
+      record.repostersCount = list.length;
+      record.topReposters = list.slice(0, 3);
     }
-
-    const items = await this.hydrate(docs, params.viewerId);
-    // Attach repost attribution to whichever page items carry one.
-    for (const item of items) {
-      const attribution = attributions.get(item.id);
-      if (attribution) {
-        item.repostedBy = attribution.primary;
-        item.repostersCount = attribution.count;
-        item.topReposters = attribution.top;
-      }
-    }
-
-    return { items, nextCursor: String(offset + params.limit) };
+    return {
+      items: records,
+      nextCursor: encodeFeedCursor({
+        pass,
+        ...position,
+        injected: pass === 0 ? injected : [],
+      }),
+    };
   }
 
   /**
@@ -1080,14 +1154,13 @@ export class ReelsDbRepository implements ReelsRepository {
       [targetUserId],
       ['username', 'name', 'avatarUrl'],
     );
-    const ownerReposter: RepostReposter = owner
+    const ownerReposter: AccountSummary = owner
       ? summaryOf(owner)
       : { id: targetUserId, username: '', name: '', avatarUrl: null };
     const relevant = await this.getRelevantRepostersForVideos(
-      viewerId,
       items.map((item) => item.id),
+      await this.repostSourceIds(viewerId, [targetUserId]),
       params.excludeCreatorIds,
-      targetUserId,
     );
     for (const item of items) {
       const others = (relevant.get(item.id) ?? []).filter(
@@ -1107,37 +1180,22 @@ export class ReelsDbRepository implements ReelsRepository {
   }
 
   /**
-   * For a set of videos, the reposters relevant to the viewer (accounts the viewer follows, the
-   * viewer, and `alwaysIncludeUserId`), each video's list most-recent-first and block-filtered.
-   * Powers the multi-reposter badge on scoped surfaces such as the profile Reposts list.
+   * For a set of videos, the reposters among `sourceIds` (the accounts the viewer follows, the
+   * viewer, and any the caller adds), each video's list most-recent-first and block-filtered.
+   * Powers the multi-reposter badge on the For You feed and on the profile Reposts list.
    */
   private async getRelevantRepostersForVideos(
-    viewerId: string,
     videoIds: string[],
+    sourceIds: Types.ObjectId[],
     excludeCreatorIds: string[],
-    alwaysIncludeUserId?: string,
-  ): Promise<Map<string, RepostReposter[]>> {
-    const viewerObjectId = toObjectId(viewerId);
+  ): Promise<Map<string, AccountSummary[]>> {
     const videoObjectIds = toObjectIds(videoIds);
-    if (!viewerObjectId || videoObjectIds.length === 0) return new Map();
-
-    const follows = await this.followModel
-      .find({ followerId: viewerObjectId })
-      .select({ followeeId: 1 })
-      .lean<Array<{ followeeId: Types.ObjectId }>>()
-      .exec();
-    const relevantIds = toObjectIds([
-      ...new Set([
-        ...follows.map((f) => f.followeeId.toString()),
-        viewerId,
-        ...(alwaysIncludeUserId ? [alwaysIncludeUserId] : []),
-      ]),
-    ]);
+    if (sourceIds.length === 0 || videoObjectIds.length === 0) return new Map();
 
     const reposts = await this.repostModel
       .find({
         videoId: { $in: videoObjectIds },
-        reposterId: { $in: relevantIds },
+        reposterId: { $in: sourceIds },
       })
       .sort({ createdAt: -1, _id: -1 })
       .lean<Array<{ videoId: Types.ObjectId; reposterId: Types.ObjectId }>>()
@@ -1151,7 +1209,7 @@ export class ReelsDbRepository implements ReelsRepository {
     const accountById = new Map(accounts.map((a) => [a._id.toString(), a]));
     const excludeSet = new Set(excludeCreatorIds);
 
-    const byVideo = new Map<string, RepostReposter[]>();
+    const byVideo = new Map<string, AccountSummary[]>();
     for (const repost of reposts) {
       const reposterId = repost.reposterId.toString();
       if (excludeSet.has(reposterId)) continue;

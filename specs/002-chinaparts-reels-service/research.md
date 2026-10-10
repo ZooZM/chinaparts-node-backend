@@ -138,11 +138,11 @@ Reels store both `hashtags`, exactly as typed for display, and `hashtagsNormaliz
 
 **Background**: the ported logic loads the entire published catalog on every request and slices it in memory. That is fine for a demo catalog and fails SC-003 at production size.
 
-- **Cursor**: an opaque base64url value of `{pass, createdAt, id, injected?}`. Each page is `(createdAt, _id) < cursor`, sorted newest first, limit + 1, on the existing `{status, createdAt, _id}` index. A cursor the service didn't issue gets `400 INVALID_CURSOR`.
-- **Looping (FR-020)**: when a pass is exhausted, the page is filled from the top of a new pass (`pass + 1`), skipping reels already on the current page. FR-019's "no duplicates or gaps" holds within a pass, and the loop is FR-020's deliberate exception.
+- **Cursor**: an opaque string of `{pass, createdAt, id, injected?}`: the header `{p,t,i}` as base64url JSON, then, only when there are injected reels, a `.` and their 12-byte ids joined and written in base64url. Two parts rather than one nested value, so the ids are encoded once: 50 of them make a cursor of about 900 characters, where nesting made 1,150. Each page is `(createdAt, _id) < cursor`, sorted newest first, limit + 1, on the existing `{status, createdAt, _id}` index. A cursor the service didn't issue gets `400 INVALID_CURSOR`.
+- **Looping (FR-020)**: when a pass is exhausted, the page is filled from the top of a new pass (`pass + 1`), skipping reels already on the current page. The only `null` cursor is an empty catalog, where there is nothing to loop. FR-019's "no duplicates or gaps" holds within a pass, and the loop is FR-020's deliberate exception.
 - **Exclusions**: the block set and the not-in-good-standing set are applied as `creatorId $nin`.
 - **Reposts (FR-017)**: kept as in Ciro. The first page of pass 0 is seeded with reels reposted by followed accounts, using at most the 50 most recent reposts.
-  - The seeded ids travel in the cursor's `injected` list (12-byte ids in base64url, under 1 KB).
+  - The seeded ids are the ones actually placed on the first page (at most the page size), and they travel in the cursor's `injected` list (under 1 KB even at 50). A reposted reel that did not fit on the first page appears later at its own place in the pass, with its repost badge.
   - They are excluded with `_id $nin` for the rest of pass 0, so a seeded reel never reappears in its chronological slot.
   - From pass 1 on, the list is dropped and every reel appears once per pass.
 - **Other feeds**: the Following feed, creator and hashtag feeds, the Liked, Saved, and Reposted lists, the reposters list, and comments (on `{videoId, deletedAt, createdAt, _id}`) move to the same keyset style, keyed by the relation's `createdAt`. The operator queues use keyset paging on their own sort keys.

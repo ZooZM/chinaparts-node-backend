@@ -12,7 +12,7 @@ The paths keep Ciro's reels paths (`/api/reels/...`, `/api/users/...`) so the Ci
   - `Authorization: Bearer <China Parts Sanctum token>` is the same token the app sends to China Parts.
   - `X-Installation-Id: <uuid v4>` should always be sent. It is required for signed-out view counting.
   - `Accept-Language: ar | en` sets the account's notification language (research R14).
-- **Cursors** are opaque strings. Pass back `nextCursor` unchanged. A `null` value means the end of the list. The For You feed never returns `null` (FR-020).
+- **Cursors** are opaque strings. Pass back `nextCursor` unchanged. A `null` value means the end of the list. The For You feed never returns `null` (FR-020), except when there is no reel at all to loop.
 
 ## Access levels
 
