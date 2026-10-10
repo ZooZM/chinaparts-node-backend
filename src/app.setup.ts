@@ -7,7 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { useContainer } from 'class-validator';
 import helmet from 'helmet';
-import { AppModule } from './app.module';
+import { CommonModule } from './common/common.module';
 import { ErrorCode } from './common/errors/error-codes';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { GlobalResponseInterceptor } from './common/interceptors/global-response.interceptor';
@@ -29,7 +29,7 @@ export function configureApp(app: NestExpressApplication): void {
   const config = app.get(ConfigService);
 
   // Lets class-validator constraints inject providers (`@MaxLengthFromConfig` needs ConfigService).
-  useContainer(app.select(AppModule), { fallbackOnErrors: true });
+  useContainer(app.select(CommonModule), { fallbackOnErrors: true });
 
   // Behind the reverse proxy, `req.ip` must be the client's address, not the proxy's.
   app.set('trust proxy', 1);

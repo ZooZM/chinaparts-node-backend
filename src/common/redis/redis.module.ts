@@ -1,9 +1,34 @@
-import { Global, Module } from '@nestjs/common';
+import {
+  Global,
+  Inject,
+  Injectable,
+  Module,
+  OnApplicationShutdown,
+} from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
 /** Injection token for the shared Redis client (research R23). */
 export const REDIS_CLIENT = 'REDIS_CLIENT';
+
+/**
+ * Closes the shared client when the application shuts down, after every other provider has had its
+ * own shutdown hook (queues and workers drain first), so a graceful stop leaves no connection
+ * behind. `quit` lets pending replies finish; if the connection is already gone it throws, and the
+ * socket is released with `disconnect`.
+ */
+@Injectable()
+export class RedisShutdown implements OnApplicationShutdown {
+  constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
+
+  async onApplicationShutdown(): Promise<void> {
+    try {
+      await this.redis.quit();
+    } catch {
+      this.redis.disconnect();
+    }
+  }
+}
 
 /**
  * One Redis connection for caches, sets and counters, injected everywhere instead of
@@ -23,6 +48,7 @@ export const REDIS_CLIENT = 'REDIS_CLIENT';
         ),
       inject: [ConfigService],
     },
+    RedisShutdown,
   ],
   exports: [REDIS_CLIENT],
 })

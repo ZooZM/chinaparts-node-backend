@@ -1,5 +1,5 @@
 import { BullModule } from '@nestjs/bullmq';
-import { Module } from '@nestjs/common';
+import { DynamicModule, Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_GUARD } from '@nestjs/core';
 import { MongooseModule } from '@nestjs/mongoose';
@@ -18,66 +18,77 @@ import { ChinaPartsModule } from './modules/china-parts/china-parts.module';
 import { HealthModule } from './modules/health/health.module';
 import { ReelsModule } from './modules/reels/reels.module';
 
-@Module({
-  imports: [
-    // Every environment variable is validated here at boot (constitution IV).
-    ConfigModule.forRoot({
-      isGlobal: true,
-      validationSchema: envValidationSchema,
-      validationOptions: { abortEarly: false },
-    }),
+/**
+ * The root module is dynamic so that configuration is read when the application is created, not
+ * when this file is first imported. A decorator argument is evaluated at import time, which is
+ * before a test has set up its environment (and, in production, would make the module depend on
+ * import order). `main.ts` and the tests both call `AppModule.register()`.
+ */
+@Module({})
+export class AppModule {
+  static register(): DynamicModule {
+    return {
+      module: AppModule,
+      imports: [
+        // Every environment variable is validated here at boot (constitution IV).
+        ConfigModule.forRoot({
+          isGlobal: true,
+          validationSchema: envValidationSchema,
+          validationOptions: { abortEarly: false },
+        }),
 
-    MongooseModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        uri: config.getOrThrow<string>('MONGODB_URI'),
-      }),
-    }),
+        MongooseModule.forRootAsync({
+          inject: [ConfigService],
+          useFactory: (config: ConfigService) => ({
+            uri: config.getOrThrow<string>('MONGODB_URI'),
+          }),
+        }),
 
-    // Queues. BullMQ workers use blocking commands, which are incompatible with ioredis's default
-    // per-request retry cap, hence `maxRetriesPerRequest: null`.
-    BullModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        connection: {
-          url: config.get<string>('REDIS_URL') || 'redis://localhost:6379',
-          maxRetriesPerRequest: null,
-        },
-      }),
-    }),
+        // Queues. BullMQ workers use blocking commands, which are incompatible with ioredis's default
+        // per-request retry cap, hence `maxRetriesPerRequest: null`.
+        BullModule.forRootAsync({
+          inject: [ConfigService],
+          useFactory: (config: ConfigService) => ({
+            connection: {
+              url: config.get<string>('REDIS_URL') || 'redis://localhost:6379',
+              maxRetriesPerRequest: null,
+            },
+          }),
+        }),
 
-    // Rate-limit counters live in Redis so every API instance shares them (constitution VI). The
-    // package's own guard is deliberately not registered: the custom guards below use this storage
-    // directly, with limits that depend on who is calling (research R10).
-    ThrottlerModule.forRootAsync({
-      inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        throttlers: [{ ttl: 60_000, limit: 100 }],
-        storage: new RedisThrottlerStorage(
-          config.get<string>('REDIS_URL') || 'redis://localhost:6379',
-        ),
-      }),
-    }),
+        // Rate-limit counters live in Redis so every API instance shares them (constitution VI). The
+        // package's own guard is deliberately not registered: the custom guards below use this storage
+        // directly, with limits that depend on who is calling (research R10).
+        ThrottlerModule.forRootAsync({
+          inject: [ConfigService],
+          useFactory: (config: ConfigService) => ({
+            throttlers: [{ ttl: 60_000, limit: 100 }],
+            storage: new RedisThrottlerStorage(
+              config.get<string>('REDIS_URL') || 'redis://localhost:6379',
+            ),
+          }),
+        }),
 
-    RedisModule,
-    CommonModule,
-    StorageModule,
-    ChinaPartsModule,
-    AccountsModule,
-    HealthModule,
-    ReelsModule,
-  ],
-  providers: [
-    // The global guard chain. THE ORDER IS LOAD-BEARING (research R10):
-    // 1. the per-IP limit runs before any token lookup, so invented tokens cannot reach China
-    //    Parts' database without limit;
-    // 2. identity is resolved, and the route's access level enforced;
-    // 3. limits that depend on who is calling need that identity;
-    // 4. good standing needs the resolved user.
-    { provide: APP_GUARD, useClass: IpThrottlerGuard },
-    { provide: APP_GUARD, useClass: ViewerAuthGuard },
-    { provide: APP_GUARD, useClass: IdentityThrottlerGuard },
-    { provide: APP_GUARD, useClass: GoodStandingGuard },
-  ],
-})
-export class AppModule {}
+        RedisModule,
+        CommonModule,
+        StorageModule,
+        ChinaPartsModule,
+        AccountsModule,
+        HealthModule,
+        ReelsModule,
+      ],
+      providers: [
+        // The global guard chain. THE ORDER IS LOAD-BEARING (research R10):
+        // 1. the per-IP limit runs before any token lookup, so invented tokens cannot reach China
+        //    Parts' database without limit;
+        // 2. identity is resolved, and the route's access level enforced;
+        // 3. limits that depend on who is calling need that identity;
+        // 4. good standing needs the resolved user.
+        { provide: APP_GUARD, useClass: IpThrottlerGuard },
+        { provide: APP_GUARD, useClass: ViewerAuthGuard },
+        { provide: APP_GUARD, useClass: IdentityThrottlerGuard },
+        { provide: APP_GUARD, useClass: GoodStandingGuard },
+      ],
+    };
+  }
+}

@@ -6,7 +6,9 @@ import { AppModule } from './app.module';
 import { configureApp } from './app.setup';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(
+    AppModule.register(),
+  );
   configureApp(app);
   // Close connections and finish in-flight jobs on SIGTERM, so a deploy never drops work.
   app.enableShutdownHooks();

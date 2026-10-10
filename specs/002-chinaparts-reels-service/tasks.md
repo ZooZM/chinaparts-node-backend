@@ -240,7 +240,7 @@ description: "Task list for the China Parts Reels Service"
   - **Accounts**: provision `reels_accounts` for `SEED_SELLER_EXTERNAL_IDS` and `SEED_CUSTOMER_EXTERNAL_IDS` through `ChinaPartsAccountsRepository` and `AccountsService.resolveOrProvision`, skipping ids China Parts doesn't have.
   - **Content**: upload `assets/seed/sample-10s.mp4` through `StorageService` into the private bucket. Create 12 published reels for the first seeded seller with Arabic and English hashtags, then call `ReelLifecycleService.syncMediaVisibility` on each.
 - [X] T039 Port the Ciro unit specs so they pass: `src/modules/reels/reels.service.spec.ts`, `reels-moderation.service.spec.ts`, `reels-notifications.service.spec.ts`, `reels-redirect.controller.spec.ts`, and `moderation/stub.provider.spec.ts`. Swap the mocks to `ReelsAccount`, `PUSH_SENDER`, `ReelLifecycleService`, `ReelPresenter`, and `media`, and assert sentinels instead of messages. `npm test` must be green.
-- [ ] T040 Create the end-to-end harness in `test/utils/`.
+- [X] T040 Create the end-to-end harness in `test/utils/`.
   - **`test/utils/app.ts`**: `createTestApp(env?)` boots the full `AppModule` against `test/utils/containers.ts`, an in-memory MongoDB replica set, the local storage driver, the `stub` moderation provider, and `WORKER_ROLE=all`, with optional env overrides.
   - **`test/utils/tokens.ts`**: `issueToken(type, externalId)` inserts a Sanctum row as root and returns `` `Bearer ${id}|${secret}` `` (quickstart.md §4).
   - **`test/utils/fixtures.ts`**:
@@ -248,13 +248,13 @@ description: "Task list for the China Parts Reels Service"
     - `runSync()` runs one standing sync directly.
     - `drainQueue(name)` waits until a BullMQ queue is empty.
 - [ ] T041 [P] Port `Ciro:test/reels.e2e-spec.ts` to `test/e2e/reels-regression.e2e-spec.ts` using the new harness, with `issueToken` replacing the JWT login and `reels_accounts` replacing `User`. Every ported behavior must still pass. Skip assertions about features this spec drops, such as sending a reel to a chat, and explain why in a comment.
-- [ ] T042 [P] Write `test/e2e/auth.e2e-spec.ts` covering FR-003 to FR-007, FR-004a, and FR-005.
+- [X] T042 [P] Write `test/e2e/auth.e2e-spec.ts` covering FR-003 to FR-007, FR-004a, and FR-005.
   - **Valid tokens**: customer and seller tokens work with no other sign-in.
   - **Rejected tokens**: an unknown token, an expired one, and an admin-type one each return `401 AUTH_INVALID_SESSION`.
   - **Revocation**: deleting the token row makes it fail once the cache TTL passes (the TTL is set to 2 s in the test).
   - **No header**: a request to a Signed-in route returns `401 AUTH_REQUIRED`.
   - **Outage**: with MySQL stopped and a fresh token, a Signed-in route returns `503 UPSTREAM_UNAVAILABLE`, not 401.
-- [ ] T043 [P] Write `test/e2e/guards.e2e-spec.ts` for R10.
+- [X] T043 [P] Write `test/e2e/guards.e2e-spec.ts` for R10.
   - **Default**: EP3 with no header returns `401 AUTH_REQUIRED`, proving the Signed-in default.
   - **Per-IP limit**: with `IP_RATE_LIMIT_PER_MINUTE=10`, signed-out requests that rotate `X-Installation-Id` still get `429 RATE_LIMITED` on the 11th.
   - **Per-account limit**: with `USER_RATE_LIMIT_PER_MINUTE=5`, the 6th signed-in request gets 429.

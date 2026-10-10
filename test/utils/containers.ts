@@ -120,6 +120,8 @@ async function openRoot(
     password,
     multipleStatements: true,
     charset: 'utf8mb4',
+    // A JS Date is written as UTC wall-clock time, whatever zone this machine is in.
+    timezone: 'Z',
   });
   // Fixtures and tests write timestamps as UTC wall-clock times, whatever zone the server is in.
   await connection.query("SET time_zone = '+00:00'");
