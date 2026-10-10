@@ -525,6 +525,20 @@ describe('ReelsService', () => {
       expect(lifecycle.onDeleted).toHaveBeenCalledWith(deleted);
     });
 
+    it('deleteReelOf deletes on behalf of an owner who is not a caller, by the same path (account cleanup)', async () => {
+      const { service, repository, lifecycle, commentReports } = setup();
+      const deleted = { id: reelId };
+      repository.deleteReelCascade.mockResolvedValue(deleted);
+
+      expect(await service.deleteReelOf(meId, reelId)).toEqual({
+        deleted: true,
+      });
+
+      expect(repository.deleteReelCascade).toHaveBeenCalledWith(reelId, meId);
+      expect(commentReports.deleteByReel).toHaveBeenCalledWith(reelId);
+      expect(lifecycle.onDeleted).toHaveBeenCalledWith(deleted);
+    });
+
     it('deletes the comment reports with the reel, before its files go (research R16)', async () => {
       const { service, repository, commentReports, lifecycle } = setup();
       repository.deleteReelCascade.mockResolvedValue({ id: reelId });

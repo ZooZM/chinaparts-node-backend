@@ -735,7 +735,7 @@ description: "Task list for the China Parts Reels Service"
 
 **Purpose**: Account cleanup, launch proofs, operations, and the final gates.
 
-- [ ] T101 Implement `src/modules/reels/lifecycle/account-cleanup.processor.ts` (queue `ACCOUNTS_CLEANUP`, worker role) for FR-010. It lives in the reels module because it deletes reels data, and the reels module already imports the accounts module (plan.md, "Structure Decision"). Extend `src/modules/accounts/standing-sync.processor.ts` to enqueue one cleanup job per id in `newlyDeleted`, by queue name only, without importing the reels module.
+- [X] T101 Implement `src/modules/reels/lifecycle/account-cleanup.processor.ts` (queue `ACCOUNTS_CLEANUP`, worker role) for FR-010. It lives in the reels module because it deletes reels data, and the reels module already imports the accounts module (plan.md, "Structure Decision"). Extend `src/modules/accounts/standing-sync.processor.ts` to enqueue one cleanup job per id in `newlyDeleted`, by queue name only, without importing the reels module.
   - **Cleanup steps**:
     - delete the account's reels through `ReelsService.deleteReel`'s path, which runs the cascade and `ReelLifecycleService.onDeleted`, so the reels' reports go too (R16)
     - soft-delete the account's comments with role `system`, decrementing counts

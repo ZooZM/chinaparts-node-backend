@@ -5,10 +5,15 @@ import { Queue } from 'bullmq';
 import Redis from 'ioredis';
 import type { AccountType, Standing } from '../../common/http/viewer-request';
 import {
+  ACCOUNT_CLEANUP_JOB,
+  ACCOUNT_CLEANUP_JOB_OPTIONS,
+} from '../../common/queues/account-cleanup-job';
+import {
   MEDIA_VISIBILITY_JOB,
   MEDIA_VISIBILITY_JOB_OPTIONS,
 } from '../../common/queues/media-visibility-job';
 import {
+  QUEUE_ACCOUNTS_CLEANUP,
   QUEUE_ACCOUNTS_SYNC,
   QUEUE_MEDIA_VISIBILITY,
 } from '../../common/queues/queue-names';
@@ -80,6 +85,7 @@ export class StandingSyncProcessor extends RoleAwareWorkerHost {
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     @InjectQueue(QUEUE_ACCOUNTS_SYNC) private readonly queue: Queue,
     @InjectQueue(QUEUE_MEDIA_VISIBILITY) private readonly mediaQueue: Queue,
+    @InjectQueue(QUEUE_ACCOUNTS_CLEANUP) private readonly cleanupQueue: Queue,
     private readonly config: ConfigService,
   ) {
     super(config);
@@ -185,6 +191,7 @@ export class StandingSyncProcessor extends RoleAwareWorkerHost {
     }
     await this.standing.replaceAll([...excluded]);
     await this.enqueueMediaSync(changedStanding, startedAt);
+    await this.enqueueCleanup(newlyDeleted);
 
     // Phase 3: MongoDB, last, because it is what the next run compares against.
     if (updates.length > 0) await this.accounts.applyDisplayUpdates(updates);
@@ -224,6 +231,24 @@ export class StandingSyncProcessor extends RoleAwareWorkerHost {
           ...MEDIA_VISIBILITY_JOB_OPTIONS,
           // BullMQ ids may not contain ':'.
           jobId: `media-${account.id}-${startedAt}`,
+        },
+      })),
+    );
+  }
+
+  /**
+   * One cleanup job for each account deleted by this run (FR-010). The job id is the account's, so
+   * a run that is repeated after a failure does not queue it twice.
+   */
+  private async enqueueCleanup(accounts: Scanned[]): Promise<void> {
+    if (accounts.length === 0) return;
+    await this.cleanupQueue.addBulk(
+      accounts.map((account) => ({
+        name: ACCOUNT_CLEANUP_JOB,
+        data: { accountId: account.id },
+        opts: {
+          ...ACCOUNT_CLEANUP_JOB_OPTIONS,
+          jobId: `cleanup-${account.id}`,
         },
       })),
     );

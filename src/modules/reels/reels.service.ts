@@ -249,11 +249,16 @@ export class ReelsService {
   }
 
   /** Owner-only, any status. The reel's files and its place in the hashtag dictionary go with it. */
-  async deleteReel(
-    user: AuthenticatedUser,
-    id: string,
-  ): Promise<{ deleted: true }> {
-    const result = await this.repository.deleteReelCascade(id, user.userId);
+  deleteReel(user: AuthenticatedUser, id: string): Promise<{ deleted: true }> {
+    return this.deleteReelOf(user.userId, id);
+  }
+
+  /**
+   * Deletes a reel on behalf of its owner: the owner asking, or the cleanup of an account that no
+   * longer exists. Both take the same path, so the side effects are the same.
+   */
+  async deleteReelOf(ownerId: string, id: string): Promise<{ deleted: true }> {
+    const result = await this.repository.deleteReelCascade(id, ownerId);
     if (result === null) throw this.reelNotFound();
     if (result === 'forbidden') {
       throw new ForbiddenException({

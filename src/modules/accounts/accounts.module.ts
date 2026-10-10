@@ -5,6 +5,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { PassportModule } from '@nestjs/passport';
 import { REQUEST_AUTHENTICATOR } from '../../common/guards/request-authenticator';
 import {
+  QUEUE_ACCOUNTS_CLEANUP,
   QUEUE_ACCOUNTS_SYNC,
   QUEUE_MEDIA_VISIBILITY,
 } from '../../common/queues/queue-names';
@@ -35,6 +36,8 @@ import { StandingSyncProcessor } from './standing-sync.processor';
     BullModule.registerQueue({ name: QUEUE_ACCOUNTS_SYNC }),
     // Producer side only: the sync enqueues a job for every account whose standing changed.
     BullModule.registerQueue({ name: QUEUE_MEDIA_VISIBILITY }),
+    // Producer side only: it queues the cleanup of an account China Parts no longer has.
+    BullModule.registerQueue({ name: QUEUE_ACCOUNTS_CLEANUP }),
     PassportModule,
     ChinaPartsModule,
   ],

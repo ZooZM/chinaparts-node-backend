@@ -142,6 +142,8 @@ function build(world: World, config: Record<string, unknown> = {}) {
   const queue = { upsertJobScheduler, removeJobScheduler } as unknown as Queue;
   const addBulk = jest.fn().mockResolvedValue([]);
   const mediaQueue = { addBulk } as unknown as Queue;
+  const addCleanup = jest.fn().mockResolvedValue([]);
+  const cleanupQueue = { addBulk: addCleanup } as unknown as Queue;
   const values: Record<string, unknown> = {
     WORKER_ROLE: 'worker',
     ACCOUNT_SYNC_INTERVAL_MINUTES: 5,
@@ -159,6 +161,7 @@ function build(world: World, config: Record<string, unknown> = {}) {
     redis.asRedis(),
     queue,
     mediaQueue,
+    cleanupQueue,
     configService,
   );
   return {
@@ -168,6 +171,7 @@ function build(world: World, config: Record<string, unknown> = {}) {
     upsertJobScheduler,
     removeJobScheduler,
     addBulk,
+    addCleanup,
   };
 }
 
@@ -319,6 +323,80 @@ describe('StandingSyncProcessor (research R7)', () => {
 
       // Nothing was written to MongoDB, so the account still looks unchanged and the next run
       // detects the suspension again and queues the job again.
+      expect(world.writes).toBe(0);
+      expect(world.local[0].standing).toBe('good');
+    });
+  });
+
+  describe('the cleanup of a deleted account (FR-010)', () => {
+    type CleanupJob = {
+      name: string;
+      data: { accountId: string };
+      opts: Record<string, unknown>;
+    };
+    const cleanupJobs = (addCleanup: jest.Mock): CleanupJob[] =>
+      (addCleanup.mock.calls as Array<[CleanupJob[]]>).flatMap(
+        ([jobs]) => jobs,
+      );
+
+    it('queues one job for an account that was just deleted, with the account as its id', async () => {
+      const row = world.add('customer', 9, { missingSince: new Date() });
+      const { processor, addCleanup } = build(world);
+
+      await processor.runOnce();
+
+      const jobs = cleanupJobs(addCleanup);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0].data).toEqual({ accountId: row._id.toString() });
+      expect(jobs[0].name).toBe('cleanup-account');
+      expect(jobs[0].opts.jobId).toBe(`cleanup-${row._id.toString()}`);
+      expect(jobs[0].opts.attempts).toBeGreaterThan(1);
+    });
+
+    it('queues nothing for a first miss, a rename, or a suspension', async () => {
+      world.add('customer', 1);
+      world.add('customer', 2, { name: 'Old' });
+      world.have('customer', 2, { name: 'New' });
+      world.add('customer', 3);
+      world.have('customer', 3, { standing: 'suspended' });
+      const { processor, addCleanup } = build(world);
+
+      await processor.runOnce();
+
+      expect(addCleanup).not.toHaveBeenCalled();
+    });
+
+    it('queues nothing for an account that was already deleted', async () => {
+      world.add('customer', 9, {
+        standing: 'deleted',
+        missingSince: new Date(),
+      });
+      const { processor, addCleanup } = build(world);
+
+      await processor.runOnce();
+
+      expect(addCleanup).not.toHaveBeenCalled();
+    });
+
+    it('queues nothing when the breaker stopped the deletions', async () => {
+      for (let id = 1; id <= 100; id += 1) {
+        world.add('customer', id, id <= 12 ? { missingSince: new Date() } : {});
+        if (id > 12) world.have('customer', id);
+      }
+      const { processor, addCleanup } = build(world);
+
+      await processor.runOnce();
+
+      expect(addCleanup).not.toHaveBeenCalled();
+    });
+
+    it('is queued before MongoDB is written, so a failed run is found again', async () => {
+      world.add('customer', 9, { missingSince: new Date() });
+      const { processor, addCleanup } = build(world);
+      addCleanup.mockRejectedValue(new Error('Redis is down'));
+
+      await expect(processor.runOnce()).rejects.toThrow('Redis is down');
+
       expect(world.writes).toBe(0);
       expect(world.local[0].standing).toBe('good');
     });

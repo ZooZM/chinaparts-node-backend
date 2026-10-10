@@ -6,6 +6,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { MulterModule } from '@nestjs/platform-express';
 import { LimitsService } from '../../common/config/limits';
 import {
+  QUEUE_ACCOUNTS_CLEANUP,
   QUEUE_MEDIA_VISIBILITY,
   QUEUE_REELS_MODERATION,
 } from '../../common/queues/queue-names';
@@ -19,12 +20,19 @@ import {
 } from './hashtags/hashtag-stats.schema';
 import { HashtagStatsService } from './hashtags/hashtag-stats.service';
 import { LinksController } from './links/links.controller';
+import { AccountCleanupProcessor } from './lifecycle/account-cleanup.processor';
+import { AccountCleanupRepository } from './lifecycle/account-cleanup.repository';
+import { AccountCleanupService } from './lifecycle/account-cleanup.service';
 import { MediaVisibilityProcessor } from './lifecycle/media-visibility.processor';
 import { CommentReportsRepository } from './comments/comment-reports.repository';
 import { CommentReportsService } from './comments/comment-reports.service';
 import { CommentsRepository } from './comments/comments.repository';
 import { CommentsService } from './comments/comments.service';
 import { ExclusionService } from './visibility/exclusion.service';
+import {
+  ReelsAccount,
+  ReelsAccountSchema,
+} from '../accounts/schemas/reels-account.schema';
 import { ReelLifecycleService } from './lifecycle/reel-lifecycle.service';
 import { MediaUrlService } from './media/media-url.service';
 import { ReelMediaService } from './media/reel-media.service';
@@ -89,6 +97,7 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
       { name: ReelRepost.name, schema: ReelRepostSchema },
       { name: ReelProductTap.name, schema: ReelProductTapSchema },
       { name: HashtagStats.name, schema: HashtagStatsSchema },
+      { name: ReelsAccount.name, schema: ReelsAccountSchema },
       { name: Follow.name, schema: FollowSchema },
       { name: NotificationEvent.name, schema: NotificationEventSchema },
     ]),
@@ -101,6 +110,8 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
     BullModule.registerQueue({ name: QUEUE_REELS_MODERATION }),
     // Re-applies media visibility after an account's standing changed (the sync enqueues the jobs).
     BullModule.registerQueue({ name: QUEUE_MEDIA_VISIBILITY }),
+    // Removes a deleted account's reels data (the standing sync queues the jobs).
+    BullModule.registerQueue({ name: QUEUE_ACCOUNTS_CLEANUP }),
     // Upload limits and temp storage come from configuration (FR-070), not a decorator argument.
     MulterModule.registerAsync({
       inject: [LimitsService],
@@ -140,6 +151,9 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
     ReelPresenter,
     ReelLifecycleService,
     MediaVisibilityProcessor,
+    AccountCleanupRepository,
+    AccountCleanupService,
+    AccountCleanupProcessor,
     // 'stub' by default (development and test, no credentials); 'sightengine' for the real
     // provider. Swapping providers later is a new class here.
     {
