@@ -415,7 +415,7 @@ description: "Task list for the China Parts Reels Service"
 
 ### Tests for User Story 3 ⚠️
 
-- [ ] T061 [P] [US3] Write `test/e2e/engagement.e2e-spec.ts`.
+- [X] T061 [P] [US3] Write `test/e2e/engagement.e2e-spec.ts`.
   - **Likes**: toggling a like changes `likesCount` by ±1, and re-liking creates no second `reelLike` event.
   - **Comments**: comments come back newest first and page by cursor with no duplicates across pages. `limit=100` returns 50. Empty, whitespace-only, and over-`REEL_COMMENT_MAX_LENGTH` comments get `400 VALIDATION_FAILED`.
   - **Saves and shares**: saves are invisible to others, and EP15 increments `sharesCount`.
@@ -432,20 +432,20 @@ description: "Task list for the China Parts Reels Service"
 
 ### Implementation for User Story 3
 
-- [ ] T062 [US3] Update `src/modules/reels/schemas/reel-comment.schema.ts` per data-model.md "reel_comments": add `deletedAt` (default null) and `deletedByRole`, replace the page index with `{videoId:1, deletedAt:1, createdAt:-1, _id:-1}`, and add `{authorId:1}`.
-- [ ] T063 [US3] Implement `src/modules/reels/comments/comments.repository.ts` (extending `BaseRepository<ReelCommentDocument>`) and `src/modules/reels/comments/comments.service.ts`.
+- [X] T062 [US3] Update `src/modules/reels/schemas/reel-comment.schema.ts` per data-model.md "reel_comments": add `deletedAt` (default null) and `deletedByRole`, replace the page index with `{videoId:1, deletedAt:1, createdAt:-1, _id:-1}`, and add `{authorId:1}`.
+- [X] T063 [US3] Implement `src/modules/reels/comments/comments.repository.ts` (extending `BaseRepository<ReelCommentDocument>`) and `src/modules/reels/comments/comments.service.ts`.
   - **`deleteComment(reelId, commentId, actor)`**: `actor` is either `{ user }` or `{ operator: true }`. A missing or deleted comment is `404 COMMENT_NOT_FOUND`. For a user:
     - the comment's author deletes with role `author`, whatever the author's standing
     - the reel's creator deletes with role `reel_owner`, and needs `standing === 'good'`, otherwise `403 ACCOUNT_NOT_IN_GOOD_STANDING`
     - anyone else gets `403 COMMENT_NOT_DELETABLE`
   - **Exactly once**: the repository soft-deletes with `findOneAndUpdate({_id, videoId, deletedAt:null}, {deletedAt, deletedByRole})`. Only when that matched does it run `$inc commentsCount:-1` on the reel.
   - **Tests**: `comments.service.spec.ts`.
-- [ ] T064 [US3] Wire comments in `src/modules/reels/reels.controller.ts` and `reels-db.repository.ts`.
+- [X] T064 [US3] Wire comments in `src/modules/reels/reels.controller.ts` and `reels-db.repository.ts`.
   - **EP22**: `DELETE /api/reels/:id/comments/:commentId` carries `@Access('signed-in')` and `@StandingExempt()`, delegating to `CommentsService`.
   - **EP21**: add `@RateLimitClass('write')`. In `dto/create-comment.dto.ts`, `text` uses `@MaxLengthFromConfig('REEL_COMMENT_MAX_LENGTH')` after trimming.
   - **EP20 reads**: keyset paging on `(createdAt, _id)` through `feed-cursor.ts` with `pass` fixed at 0. Filter `deletedAt:null`, drop excluded or blocked authors, and clamp the page with `LimitsService.clampPageSize('comments', limit)`.
   - **Response shape**: add `viewerCanDelete` and `viewerCanReport` to `CommentDto` in `src/modules/reels/reels.repository.ts` (contracts/rest-api.md "CommentDto").
-- [ ] T065 [US3] Convert `listLiked` and `listSaved` in `src/modules/reels/reels-db.repository.ts` from offset paging to keyset paging on the relation's `(createdAt, _id)`, reusing `feed-cursor.ts` with `pass` fixed at 0.
+- [X] T065 [US3] Convert `listLiked` and `listSaved` in `src/modules/reels/reels-db.repository.ts` from offset paging to keyset paging on the relation's `(createdAt, _id)`, reusing `feed-cursor.ts` with `pass` fixed at 0.
 
 **Checkpoint**: Engagement and comment deletion work.
 

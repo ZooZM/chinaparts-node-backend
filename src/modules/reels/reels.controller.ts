@@ -20,6 +20,7 @@ import type {
   ViewerContext,
 } from '../../common/http/viewer-request';
 import { CurrentUser, Viewer } from '../../common/http/viewer.decorator';
+import { CommentsService } from './comments/comments.service';
 import { CreateCommentDto } from './dto/create-comment.dto';
 import { CreateReelDto } from './dto/create-reel.dto';
 import {
@@ -56,6 +57,7 @@ export class ReelsController {
   constructor(
     private readonly reelsService: ReelsService,
     private readonly uploadService: ReelUploadService,
+    private readonly commentsService: CommentsService,
   ) {}
 
   @Get('liked')
@@ -198,6 +200,19 @@ export class ReelsController {
     @Body() dto: CreateCommentDto,
   ): Promise<{ comment: CommentDto; commentsCount: number }> {
     return this.reelsService.addComment(user, id, dto.text);
+  }
+
+  // Allowed out of good standing for the comment's author; the service applies the rest of the
+  // rule (FR-008), so the guard is told to let the request through.
+  @Delete(':id/comments/:commentId')
+  @Access('signed-in')
+  @StandingExempt()
+  deleteComment(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Param('commentId') commentId: string,
+  ): Promise<{ deleted: true }> {
+    return this.commentsService.deleteComment(id, commentId, { user });
   }
 
   @Post(':id/share')

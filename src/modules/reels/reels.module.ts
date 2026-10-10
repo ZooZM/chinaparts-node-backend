@@ -13,6 +13,8 @@ import { AccountsModule } from '../accounts/accounts.module';
 import { ChinaPartsModule } from '../china-parts/china-parts.module';
 import { PushModule } from '../push/push.module';
 import { MediaVisibilityProcessor } from './lifecycle/media-visibility.processor';
+import { CommentsRepository } from './comments/comments.repository';
+import { CommentsService } from './comments/comments.service';
 import { ReelLifecycleService } from './lifecycle/reel-lifecycle.service';
 import { MediaUrlService } from './media/media-url.service';
 import { ReelMediaService } from './media/reel-media.service';
@@ -93,6 +95,8 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
     ReelsDbRepository,
     { provide: REELS_REPOSITORY, useExisting: ReelsDbRepository },
     NotificationEventsRepository,
+    CommentsRepository,
+    CommentsService,
     ReelsNotificationsService,
     ReelsModerationService,
     ReelsModerationProcessor,

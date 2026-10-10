@@ -95,6 +95,32 @@ function mediaOf(reel: Pick<ReelLean, 'media'>): ReelMediaRecord {
   };
 }
 
+/** A comment as shown to one viewer, with what that viewer may do with it. */
+function commentDto(
+  comment: {
+    id: string;
+    authorId: string;
+    text: string;
+    createdAt: Date | undefined;
+    author: { name?: string; avatarUrl?: string | null } | undefined;
+  },
+  viewerId: string,
+  reelCreatorId: string,
+): CommentDto {
+  const signedIn = viewerId !== '';
+  const isAuthor = signedIn && comment.authorId === viewerId;
+  return {
+    id: comment.id,
+    authorId: comment.authorId,
+    authorName: comment.author?.name ?? 'Unknown',
+    authorAvatarUrl: comment.author?.avatarUrl ?? null,
+    text: comment.text,
+    createdAt: iso(comment.createdAt),
+    viewerCanDelete: isAuthor || (signedIn && reelCreatorId === viewerId),
+    viewerCanReport: signedIn && !isAuthor,
+  };
+}
+
 /** Where a reel sits in a newest-first list, for a cursor that continues after it. */
 function positionOf(reel: ReelLean): { createdAt: Date; id: string } {
   return { createdAt: reel.createdAt ?? new Date(0), id: reel._id.toString() };
@@ -719,33 +745,42 @@ export class ReelsDbRepository implements ReelsRepository {
 
   async listComments(
     id: string,
-    params: { cursor?: string; limit: number; excludeAuthorIds: string[] },
+    params: {
+      viewerId: string;
+      cursor?: string;
+      limit: number;
+      excludeAuthorIds: string[];
+    },
   ): Promise<{
     items: CommentDto[];
     nextCursor: string | null;
     commentsCount: number;
   } | null> {
+    const position = decodeListCursor(params.cursor);
     const videoId = toObjectId(id);
     if (!videoId) return null;
     // A non-published reel has no comments to serve.
     const reel = await this.reelModel
       .findOne({ _id: videoId, status: ReelStatus.PUBLISHED })
-      .select({ commentsCount: 1 })
-      .lean<{ commentsCount: number }>()
+      .select({ commentsCount: 1, creatorId: 1 })
+      .lean<{ commentsCount: number; creatorId: Types.ObjectId }>()
       .exec();
     if (!reel) return null;
 
-    const offset = this.parseCursor(params.cursor);
-    const filter: Record<string, unknown> = { videoId };
+    const conditions: Record<string, unknown>[] = [
+      { videoId, deletedAt: null },
+    ];
     if (params.excludeAuthorIds.length > 0) {
-      filter.authorId = { $nin: toObjectIds(params.excludeAuthorIds) };
+      conditions.push({
+        authorId: { $nin: toObjectIds(params.excludeAuthorIds) },
+      });
     }
-    const total = await this.commentModel.countDocuments(filter).exec();
+    if (position) conditions.push(this.before(position));
+
     const docs = await this.commentModel
-      .find(filter)
+      .find({ $and: conditions })
       .sort({ createdAt: -1, _id: -1 })
-      .skip(offset)
-      .limit(params.limit)
+      .limit(params.limit + 1)
       .lean<
         Array<{
           _id: Types.ObjectId;
@@ -755,27 +790,39 @@ export class ReelsDbRepository implements ReelsRepository {
         }>
       >()
       .exec();
+    const page = docs.slice(0, params.limit);
+    const last = page[page.length - 1];
 
     const authors = await this.accounts.findByIdsLean(
-      [...new Set(docs.map((d) => d.authorId.toString()))],
+      [...new Set(page.map((d) => d.authorId.toString()))],
       ['name', 'avatarUrl'],
     );
     const authorById = new Map(authors.map((a) => [a._id.toString(), a]));
+    const reelCreatorId = reel.creatorId.toString();
 
-    const nextOffset = offset + params.limit;
     return {
-      items: docs.map((c) => {
+      items: page.map((c) => {
         const author = authorById.get(c.authorId.toString());
-        return {
-          id: c._id.toString(),
-          authorId: c.authorId.toString(),
-          authorName: author?.name ?? 'Unknown',
-          authorAvatarUrl: author?.avatarUrl ?? null,
-          text: c.text,
-          createdAt: iso(c.createdAt),
-        };
+        return commentDto(
+          {
+            id: c._id.toString(),
+            authorId: c.authorId.toString(),
+            text: c.text,
+            createdAt: c.createdAt,
+            author,
+          },
+          params.viewerId,
+          reelCreatorId,
+        );
       }),
-      nextCursor: nextOffset < total ? String(nextOffset) : null,
+      nextCursor:
+        docs.length > params.limit && last
+          ? encodeFeedCursor({
+              pass: 0,
+              createdAt: last.createdAt ?? new Date(0),
+              id: last._id.toString(),
+            })
+          : null,
       commentsCount: reel.commentsCount,
     };
   }
@@ -802,8 +849,8 @@ export class ReelsDbRepository implements ReelsRepository {
         { $inc: { commentsCount: 1 } },
         { returnDocument: 'after' },
       )
-      .select({ commentsCount: 1 })
-      .lean<{ commentsCount: number }>()
+      .select({ commentsCount: 1, creatorId: 1 })
+      .lean<{ commentsCount: number; creatorId: Types.ObjectId }>()
       .exec();
     const [author] = await this.accounts.findByIdsLean(
       [viewerId],
@@ -811,16 +858,33 @@ export class ReelsDbRepository implements ReelsRepository {
     );
 
     return {
-      comment: {
-        id: created._id.toString(),
-        authorId: viewerId,
-        authorName: author?.name ?? 'Unknown',
-        authorAvatarUrl: author?.avatarUrl ?? null,
-        text: created.text,
-        createdAt: iso(created.createdAt),
-      },
+      comment: commentDto(
+        {
+          id: created._id.toString(),
+          authorId: viewerId,
+          text: created.text,
+          createdAt: created.createdAt,
+          author,
+        },
+        viewerId,
+        updated?.creatorId.toString() ?? '',
+      ),
       commentsCount: updated?.commentsCount ?? 0,
     };
+  }
+
+  async adjustCommentsCount(id: string, delta: number): Promise<void> {
+    const videoId = toObjectId(id);
+    if (!videoId || delta === 0) return;
+    await this.reelModel
+      .updateOne(
+        // A decrement never takes the stored count below zero.
+        delta < 0
+          ? { _id: videoId, commentsCount: { $gt: 0 } }
+          : { _id: videoId },
+        { $inc: { commentsCount: delta } },
+      )
+      .exec();
   }
 
   async recordShare(
@@ -1065,30 +1129,43 @@ export class ReelsDbRepository implements ReelsRepository {
     viewerId: string,
     params: { cursor?: string; limit: number; excludeCreatorIds: string[] },
   ): Promise<Page<ReelRecord>> {
+    const position = decodeListCursor(params.cursor);
     const userId = toObjectId(viewerId);
     if (!userId) return { items: [], nextCursor: null };
-    const offset = this.parseCursor(params.cursor);
 
-    const total = await relationModel.countDocuments({ userId }).exec();
-    if (total === 0) return { items: [], nextCursor: null };
-
+    // One more than the page, to know whether there is a next one without counting.
     const relations = await relationModel
-      .find({ userId })
+      .find(
+        position ? { $and: [{ userId }, this.before(position)] } : { userId },
+      )
       .sort({ createdAt: -1, _id: -1 })
-      .skip(offset)
-      .limit(params.limit)
-      .lean<Array<{ videoId: Types.ObjectId }>>()
+      .limit(params.limit + 1)
+      .lean<
+        Array<{
+          _id: Types.ObjectId;
+          videoId: Types.ObjectId;
+          createdAt?: Date;
+        }>
+      >()
       .exec();
+    const page = relations.slice(0, params.limit);
+    const last = page[page.length - 1];
     const ordered = await this.reelsInOrder(
-      relations.map((r) => r.videoId),
+      page.map((r) => r.videoId),
       viewerId,
       params.excludeCreatorIds,
     );
 
-    const nextOffset = offset + params.limit;
     return {
       items: await this.hydrate(ordered, viewerId),
-      nextCursor: nextOffset < total ? String(nextOffset) : null,
+      nextCursor:
+        relations.length > params.limit && last
+          ? encodeFeedCursor({
+              pass: 0,
+              createdAt: last.createdAt ?? new Date(0),
+              id: last._id.toString(),
+            })
+          : null,
     };
   }
 

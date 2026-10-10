@@ -843,6 +843,30 @@ describe('ReelsService', () => {
       );
     });
 
+    it('tells the repository who is asking, so it can say what they may do with each comment', async () => {
+      const { service, repository } = setup();
+      repository.listComments.mockResolvedValue({
+        items: [],
+        nextCursor: null,
+        commentsCount: 0,
+      });
+
+      await service.getComments({ user: me }, reelId, {});
+      await service.getComments({}, reelId, {});
+
+      expect(repository.listComments).toHaveBeenNthCalledWith(
+        1,
+        reelId,
+        expect.objectContaining({ viewerId: me.userId }),
+      );
+      // A signed-out visitor has no id, so every flag comes back false.
+      expect(repository.listComments).toHaveBeenNthCalledWith(
+        2,
+        reelId,
+        expect.objectContaining({ viewerId: '' }),
+      );
+    });
+
     it('is a 404 when the reel is unknown', async () => {
       const { service, repository } = setup();
       repository.listComments.mockResolvedValue(null);

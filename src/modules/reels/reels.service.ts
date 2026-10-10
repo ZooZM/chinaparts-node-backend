@@ -297,6 +297,7 @@ export class ReelsService {
   }> {
     const viewerId = this.idOf(viewer);
     const result = await this.repository.listComments(id, {
+      viewerId,
       cursor: query.cursor,
       limit: this.limits.clampPageSize('comments', query.limit),
       excludeAuthorIds: await this.exclusionSet(viewerId),

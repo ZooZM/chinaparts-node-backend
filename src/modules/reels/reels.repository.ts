@@ -100,6 +100,10 @@ export interface CommentDto {
   authorAvatarUrl: string | null;
   text: string;
   createdAt: string;
+  /** The viewer is the author or the reel's creator (EP22 decides whether it will succeed). */
+  viewerCanDelete: boolean;
+  /** The viewer is signed in and is not the author. */
+  viewerCanReport: boolean;
 }
 
 // ── Profiles ────────────────────────────────────────────────────────────────────────────────
@@ -230,7 +234,12 @@ export interface ReelsRepository {
 
   listComments(
     id: string,
-    params: { cursor?: string; limit: number; excludeAuthorIds: string[] },
+    params: {
+      viewerId: string;
+      cursor?: string;
+      limit: number;
+      excludeAuthorIds: string[];
+    },
   ): Promise<{
     items: CommentDto[];
     nextCursor: string | null;
@@ -247,6 +256,9 @@ export interface ReelsRepository {
     id: string,
     viewerId: string,
   ): Promise<{ sharesCount: number } | null>;
+
+  /** Moves a reel's stored comment count, never below zero. The counter follows the relation write. */
+  adjustCommentsCount(id: string, delta: number): Promise<void>;
 
   getProfile(
     userId: string,
