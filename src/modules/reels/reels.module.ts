@@ -18,6 +18,7 @@ import {
   HashtagStatsSchema,
 } from './hashtags/hashtag-stats.schema';
 import { HashtagStatsService } from './hashtags/hashtag-stats.service';
+import { LinksController } from './links/links.controller';
 import { MediaVisibilityProcessor } from './lifecycle/media-visibility.processor';
 import { CommentReportsRepository } from './comments/comment-reports.repository';
 import { CommentReportsService } from './comments/comment-reports.service';
@@ -41,7 +42,6 @@ import { ReelsDbRepository } from './reels-db.repository';
 import { ReelsModerationProcessor } from './reels-moderation.processor';
 import { ReelsModerationService } from './reels-moderation.service';
 import { ReelsNotificationsService } from './reels-notifications.service';
-import { ReelsRedirectController } from './reels-redirect.controller';
 import { ReelsSeedService } from './reels-seed.service';
 import { ReportLimitService } from './reports/report-limit.service';
 import { ReelsUsersController } from './reels-users.controller';
@@ -113,7 +113,7 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
     ReelsAdminController,
     ReelsController,
     ReelsUsersController,
-    ReelsRedirectController,
+    LinksController,
   ],
   providers: [
     ReelsService,

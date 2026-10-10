@@ -714,7 +714,7 @@ description: "Task list for the China Parts Reels Service"
 
 ### Tests for User Story 10 ⚠️
 
-- [ ] T099 [P] [US10] Write `test/e2e/links.e2e-spec.ts`.
+- [X] T099 [P] [US10] Write `test/e2e/links.e2e-spec.ts`.
   - **App link files**: `/.well-known/apple-app-site-association` returns `application/json` with the configured app ID and `/reels/*`, without the envelope. `/.well-known/assetlinks.json` returns the package and fingerprints.
   - **Store page**: `/reels/<validId>` with an iPhone user agent contains `IOS_STORE_URL`, with an Android user agent contains `ANDROID_STORE_URL`, and with a desktop user agent contains both (FR-069).
   - **Link previews**: the page has `<link rel="canonical">` and `og:url` equal to `LINKS_PUBLIC_BASE_URL/reels/<validId>`.
@@ -723,7 +723,7 @@ description: "Task list for the China Parts Reels Service"
 
 ### Implementation for User Story 10
 
-- [ ] T100 [US10] Replace `src/modules/reels/reels-redirect.controller.ts` (and its spec) with `src/modules/reels/links/links.controller.ts` and `links.controller.spec.ts`. All three routes are `@Access('public')` and use `@Res()` to bypass the envelope. They stay under the per-IP limit.
+- [X] T100 [US10] Replace `src/modules/reels/reels-redirect.controller.ts` (and its spec) with `src/modules/reels/links/links.controller.ts` and `links.controller.spec.ts`. All three routes are `@Access('public')` and use `@Res()` to bypass the envelope. They stay under the per-IP limit.
   - **Store page**: `GET /reels/:id` returns 404 unless `Types.ObjectId.isValid(id)`. It HTML-escapes every interpolated value, and the store URLs and title text come from config (customer app listings). iPhones get the App Store link, Android phones get Google Play, and every other user agent gets both (FR-069). The page carries `<link rel="canonical">` and `og:url` built from `LINKS_PUBLIC_BASE_URL`, plus a fixed `og:title` from config (R15).
   - **App link files**: `GET /.well-known/apple-app-site-association` and `GET /.well-known/assetlinks.json` are built from `IOS_TEAM_ID`, `IOS_BUNDLE_ID`, `ANDROID_PACKAGE_NAME`, and `ANDROID_CERT_FINGERPRINTS` (contracts/client-integration.md). They return 404 when unconfigured.
 

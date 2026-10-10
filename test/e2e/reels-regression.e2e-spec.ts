@@ -1206,10 +1206,10 @@ describe('Reels regression, ported from the Ciro spec (e2e)', () => {
   });
 
   describe('the store page (FR-039a)', () => {
-    // The product's own page for a shared link arrives with the links work (T100); until then this
-    // keeps the one behavior Ciro protected: it opens with no session and serves HTML.
+    // Ciro served this page for any text in the address. It now serves reel links only (a 24-hex
+    // id), which closes an HTML injection; its own behavior is covered by links.e2e-spec.ts.
     it('is served as HTML with no session', async () => {
-      const res = await api().raw('/reels/some-id');
+      const res = await api().raw('/reels/650000000000000000000001');
       expect(res.status).toBe(200);
       expect(res.contentType).toContain('text/html');
     });
