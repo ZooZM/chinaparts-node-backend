@@ -354,7 +354,7 @@ description: "Task list for the China Parts Reels Service"
 
 ### Tests for User Story 2 ⚠️
 
-- [ ] T055 [P] [US2] Write `test/e2e/upload.e2e-spec.ts`.
+- [X] T055 [P] [US2] Write `test/e2e/upload.e2e-spec.ts`.
   - **Happy path**: seller 1 uploads, gets status `pending_moderation`, and the object exists only in the private bucket. After the stub's clean verdict, the reel is `published`, the object exists in the public bucket with `Cache-Control: public, max-age=300`, and a mention notification event is recorded.
   - **Flagged**: a flagged upload (stub configured to flag) becomes `rejected`, has no public object, and the owner gets a `reelRejected` event.
   - **Refused**:
@@ -376,8 +376,8 @@ description: "Task list for the China Parts Reels Service"
 
 ### Implementation for User Story 2
 
-- [ ] T056 [P] [US2] Implement `src/modules/reels/media/thumbnail.util.ts`: `generateThumbnail(videoPath): Promise<string>` runs the `@ffmpeg-installer/ffmpeg` binary with `-ss 1 -frames:v 1 -q:v 3` to a temporary JPEG. Add `thumbnail.util.spec.ts`, which uses `test/fixtures/media/sample-10s.mp4`.
-- [ ] T057 [US2] Move upload handling out of the controller into `src/modules/reels/media/reel-upload.service.ts`.
+- [X] T056 [P] [US2] Provide `generateThumbnail` in `src/modules/reels/media/video.util.ts`, beside the other ffmpeg helpers (it is part of that file, not a separate `thumbnail.util.ts`): `generateThumbnail(videoPath): Promise<string>` runs the `@ffmpeg-installer/ffmpeg` binary with `-ss 1 -frames:v 1 -q:v 3` to a temporary JPEG. Its specs are in `video.util.spec.ts`, which uses `test/fixtures/media/sample-10s.mp4`.
+- [X] T057 [US2] Move upload handling out of the controller into `src/modules/reels/media/reel-upload.service.ts`.
   - **Steps**:
     - Pre-generate the reel ObjectId.
     - Keep the ported duration check, allowing at most `REEL_MAX_DURATION_SECONDS` plus 1 second of measurement tolerance (FR-026), and the fast-start remux.
@@ -388,17 +388,17 @@ description: "Task list for the China Parts Reels Service"
   - **Limits**: read the size and duration limits from `LimitsService`. In `src/modules/reels/dto/create-reel.dto.ts`, validate `description` with `@MaxLengthFromConfig('REEL_MAX_DESCRIPTION_LENGTH')`.
   - **Controller**: in `src/modules/reels/reels.controller.ts`, EP8 uses Multer disk storage in `os.tmpdir()/reels-uploads` with `REEL_MAX_VIDEO_BYTES`. It is `@Access('seller')` and `@RateLimitClass('upload')`, and it delegates to the service.
   - **Tests**: add `src/modules/reels/media/reel-upload.service.spec.ts`. Cover a successful upload, a storage failure after the video is stored (the video object is deleted and no document exists), a duration failure, and a missing cover.
-- [ ] T058 [US2] Update `src/modules/reels/reels-moderation.service.ts`.
+- [X] T058 [US2] Update `src/modules/reels/reels-moderation.service.ts`.
   - **Download**: fetch the video with `StorageService.downloadToTemp` from the private bucket, call the provider, and always delete the temporary file.
   - **Verdict**: a clean verdict runs the guarded publish and then `ReelLifecycleService.onPublished`, which makes media public only if the creator is in good standing. A flagged verdict records the rejection.
   - **Retries**: keep the ported fail-closed retries and the pending sweep (FR-031) unchanged.
   - **Tests**: update `reels-moderation.service.spec.ts`.
-- [ ] T059 [US2] Wire owner delete (EP10) in `src/modules/reels/reels-db.repository.ts` and `src/modules/reels/reels.service.ts`.
+- [X] T059 [US2] Wire owner delete (EP10) in `src/modules/reels/reels-db.repository.ts` and `src/modules/reels/reels.service.ts`.
   - **Repository**: `deleteReelCascade` in `src/modules/reels/reels-db.repository.ts` keeps the ported cascade, adds `reel_guest_views` and `reel_reports`, and returns the R22 snapshot.
   - **Service**: `ReelsService.deleteReel` checks ownership (`403 NOT_REEL_OWNER`), calls the repository, then calls `ReelLifecycleService.onDeleted(snapshot)`. EP10 stays `@StandingExempt()`.
   - **Later additions**: product taps (T074) and comment reports (T085) join the cascade.
   - **Tests**: update `reels.service.spec.ts`.
-- [ ] T060 [US2] Implement `src/modules/reels/lifecycle/media-visibility.processor.ts` (queue `MEDIA_VISIBILITY`, worker role only).
+- [X] T060 [US2] Implement `src/modules/reels/lifecycle/media-visibility.processor.ts` (queue `MEDIA_VISIBILITY`, worker role only).
   - **Job**: `{ accountId }` pages through that account's published reels with a new `ReelsDbRepository.listPublishedByCreator(creatorId, cursor, limit)`, and calls `ReelLifecycleService.syncMediaVisibility` on each.
   - **Hook**: extend `src/modules/accounts/standing-sync.processor.ts` to enqueue one job per id in `changedStanding`, with job id `media:{accountId}:{cycleStartedAt}`.
   - **Tests**: add `media-visibility.processor.spec.ts`.

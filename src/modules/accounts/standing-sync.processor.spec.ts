@@ -140,6 +140,8 @@ function build(world: World, config: Record<string, unknown> = {}) {
   const upsertJobScheduler = jest.fn().mockResolvedValue(undefined);
   const removeJobScheduler = jest.fn().mockResolvedValue(true);
   const queue = { upsertJobScheduler, removeJobScheduler } as unknown as Queue;
+  const addBulk = jest.fn().mockResolvedValue([]);
+  const mediaQueue = { addBulk } as unknown as Queue;
   const values: Record<string, unknown> = {
     WORKER_ROLE: 'worker',
     ACCOUNT_SYNC_INTERVAL_MINUTES: 5,
@@ -156,9 +158,17 @@ function build(world: World, config: Record<string, unknown> = {}) {
     standing,
     redis.asRedis(),
     queue,
+    mediaQueue,
     configService,
   );
-  return { processor, redis, standing, upsertJobScheduler, removeJobScheduler };
+  return {
+    processor,
+    redis,
+    standing,
+    upsertJobScheduler,
+    removeJobScheduler,
+    addBulk,
+  };
 }
 
 describe('StandingSyncProcessor (research R7)', () => {
@@ -243,6 +253,74 @@ describe('StandingSyncProcessor (research R7)', () => {
       await processor.runOnce();
 
       expect([...(await standing.members())]).toEqual([bad._id.toString()]);
+    });
+  });
+
+  describe('the media that follow standing (FR-009, FR-014)', () => {
+    type BulkJob = {
+      name: string;
+      data: { accountId: string };
+      opts: Record<string, unknown>;
+    };
+    const jobsOf = (addBulk: jest.Mock): BulkJob[] =>
+      (addBulk.mock.calls as Array<[BulkJob[]]>).flatMap(([jobs]) => jobs);
+
+    it('queues one job for each account whose standing changed, with an id that has no colon', async () => {
+      const suspended = world.add('seller', 1);
+      const reinstated = world.add('seller', 2, { standing: 'suspended' });
+      world.add('seller', 3);
+      world.have('seller', 1, { standing: 'suspended' });
+      world.have('seller', 2, { standing: 'good' });
+      world.have('seller', 3);
+      const { processor, addBulk } = build(world);
+
+      await processor.runOnce();
+
+      const jobs = jobsOf(addBulk);
+      expect(jobs.map((job) => job.data.accountId).sort()).toEqual(
+        [suspended._id.toString(), reinstated._id.toString()].sort(),
+      );
+      for (const job of jobs) {
+        expect(job.name).toBe('sync-account');
+        expect(String(job.opts.jobId)).toMatch(/^media-[0-9a-f]{24}-\d+$/);
+        expect(job.opts.attempts).toBeGreaterThan(1);
+      }
+    });
+
+    it('queues one for an account that was just deleted', async () => {
+      const row = world.add('customer', 9, { missingSince: new Date() });
+      const { processor, addBulk } = build(world);
+
+      await processor.runOnce();
+
+      expect(jobsOf(addBulk).map((job) => job.data.accountId)).toEqual([
+        row._id.toString(),
+      ]);
+    });
+
+    it('queues nothing when no standing changed, for a rename or a first miss', async () => {
+      world.add('customer', 1, { name: 'Old' });
+      world.have('customer', 1, { name: 'New' });
+      world.add('customer', 2);
+      const { processor, addBulk } = build(world);
+
+      await processor.runOnce();
+
+      expect(addBulk).not.toHaveBeenCalled();
+    });
+
+    it('puts the exclusion set and the jobs ahead of MongoDB, so a failed run is found again', async () => {
+      world.add('seller', 1);
+      world.have('seller', 1, { standing: 'suspended' });
+      const { processor, addBulk } = build(world);
+      addBulk.mockRejectedValue(new Error('Redis is down'));
+
+      await expect(processor.runOnce()).rejects.toThrow('Redis is down');
+
+      // Nothing was written to MongoDB, so the account still looks unchanged and the next run
+      // detects the suspension again and queues the job again.
+      expect(world.writes).toBe(0);
+      expect(world.local[0].standing).toBe('good');
     });
   });
 

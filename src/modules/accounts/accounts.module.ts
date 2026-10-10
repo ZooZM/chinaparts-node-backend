@@ -3,7 +3,10 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { PassportModule } from '@nestjs/passport';
 import { REQUEST_AUTHENTICATOR } from '../../common/guards/request-authenticator';
-import { QUEUE_ACCOUNTS_SYNC } from '../../common/queues/queue-names';
+import {
+  QUEUE_ACCOUNTS_SYNC,
+  QUEUE_MEDIA_VISIBILITY,
+} from '../../common/queues/queue-names';
 import { ChinaPartsModule } from '../china-parts/china-parts.module';
 import { AccountsController } from './accounts.controller';
 import { AccountsRepository } from './accounts.repository';
@@ -28,6 +31,8 @@ import { StandingSyncProcessor } from './standing-sync.processor';
       { name: ReelsAccount.name, schema: ReelsAccountSchema },
     ]),
     BullModule.registerQueue({ name: QUEUE_ACCOUNTS_SYNC }),
+    // Producer side only: the sync enqueues a job for every account whose standing changed.
+    BullModule.registerQueue({ name: QUEUE_MEDIA_VISIBILITY }),
     PassportModule,
     ChinaPartsModule,
   ],

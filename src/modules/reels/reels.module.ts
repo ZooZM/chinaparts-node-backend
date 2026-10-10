@@ -5,10 +5,14 @@ import { ConfigService } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { MulterModule } from '@nestjs/platform-express';
 import { LimitsService } from '../../common/config/limits';
-import { QUEUE_REELS_MODERATION } from '../../common/queues/queue-names';
+import {
+  QUEUE_MEDIA_VISIBILITY,
+  QUEUE_REELS_MODERATION,
+} from '../../common/queues/queue-names';
 import { AccountsModule } from '../accounts/accounts.module';
 import { ChinaPartsModule } from '../china-parts/china-parts.module';
 import { PushModule } from '../push/push.module';
+import { MediaVisibilityProcessor } from './lifecycle/media-visibility.processor';
 import { ReelLifecycleService } from './lifecycle/reel-lifecycle.service';
 import { MediaUrlService } from './media/media-url.service';
 import { ReelMediaService } from './media/reel-media.service';
@@ -70,6 +74,8 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
     HttpModule,
     // The screening queue. The connection comes from `BullModule.forRootAsync` in AppModule.
     BullModule.registerQueue({ name: QUEUE_REELS_MODERATION }),
+    // Re-applies media visibility after an account's standing changed (the sync enqueues the jobs).
+    BullModule.registerQueue({ name: QUEUE_MEDIA_VISIBILITY }),
     // Upload limits and temp storage come from configuration (FR-070), not a decorator argument.
     MulterModule.registerAsync({
       inject: [LimitsService],
@@ -96,6 +102,7 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
     MediaUrlService,
     ReelPresenter,
     ReelLifecycleService,
+    MediaVisibilityProcessor,
     // 'stub' by default (development and test, no credentials); 'sightengine' for the real
     // provider. Swapping providers later is a new class here.
     {

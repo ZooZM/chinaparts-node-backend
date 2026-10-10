@@ -3,8 +3,15 @@ import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
-import type { AccountType } from '../../common/http/viewer-request';
-import { QUEUE_ACCOUNTS_SYNC } from '../../common/queues/queue-names';
+import type { AccountType, Standing } from '../../common/http/viewer-request';
+import {
+  MEDIA_VISIBILITY_JOB,
+  MEDIA_VISIBILITY_JOB_OPTIONS,
+} from '../../common/queues/media-visibility-job';
+import {
+  QUEUE_ACCOUNTS_SYNC,
+  QUEUE_MEDIA_VISIBILITY,
+} from '../../common/queues/queue-names';
 import { RoleAwareWorkerHost } from '../../common/queues/role-aware-worker.host';
 import { REDIS_CLIENT } from '../../common/redis/redis.module';
 import {
@@ -34,10 +41,12 @@ export interface SyncResult {
   newlyDeleted: string[];
 }
 
+/** An account the run looked at, with the standing it ends up in if it changed. */
 interface Scanned {
   id: string;
   accountType: AccountType;
   externalId: number;
+  standing: Standing;
 }
 
 /**
@@ -50,6 +59,10 @@ interface Scanned {
  * The run is built to fail safe, because the worst thing it could do is act on bad data:
  * - It reads everything first and writes afterwards, so a China Parts error (a thrown query) leaves
  *   every account exactly as it was. An unreachable database never looks like a deleted account.
+ * - What the run does is ordered so that a failure is simply found again by the next run: the
+ *   exclusion set and the media jobs (Redis) come first and MongoDB, which is what the next run
+ *   compares against, comes last. A run that fails before its MongoDB writes still sees every
+ *   change next time, so no account is left with its media on the wrong side.
  * - An account is only deleted after two consecutive cycles in which China Parts did not return it.
  * - If a cycle finds more than 10 accounts missing and more than `SYNC_MAX_MISSING_RATIO` of those
  *   it checked, it assumes China Parts is wrong (a wrong database, an empty replica) and marks
@@ -66,6 +79,7 @@ export class StandingSyncProcessor extends RoleAwareWorkerHost {
     private readonly standing: StandingService,
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     @InjectQueue(QUEUE_ACCOUNTS_SYNC) private readonly queue: Queue,
+    @InjectQueue(QUEUE_MEDIA_VISIBILITY) private readonly mediaQueue: Queue,
     private readonly config: ConfigService,
   ) {
     super(config);
@@ -93,6 +107,7 @@ export class StandingSyncProcessor extends RoleAwareWorkerHost {
   }
 
   async runOnce(): Promise<SyncResult> {
+    const startedAt = Date.now();
     const changed: Scanned[] = [];
     const updates: Array<{ id: string; data: DisplayUpdate }> = [];
     const missing: Array<{ scanned: Scanned; stampedBefore: boolean }> = [];
@@ -119,13 +134,16 @@ export class StandingSyncProcessor extends RoleAwareWorkerHost {
             id: local._id.toString(),
             accountType,
             externalId: local.externalId,
+            standing: local.standing,
           };
           const found = remote.get(local.externalId);
           if (found) {
             checked += 1;
             if (differs(local, found)) {
               updates.push({ id: scanned.id, data: toDisplay(found) });
-              if (local.standing !== found.standing) changed.push(scanned);
+              if (local.standing !== found.standing) {
+                changed.push({ ...scanned, standing: found.standing });
+              }
             }
           } else if (local.standing !== 'deleted') {
             // Already deleted accounts are expected to be absent: they are neither checked nor
@@ -141,10 +159,9 @@ export class StandingSyncProcessor extends RoleAwareWorkerHost {
       }
     }
 
-    // Phase 2: write.
-    if (updates.length > 0) await this.accounts.applyDisplayUpdates(updates);
-
-    const newlyDeleted: Scanned[] = [];
+    // What to do about the accounts China Parts did not return, decided here and applied later.
+    let firstMiss: Scanned[] = [];
+    let newlyDeleted: Scanned[] = [];
     if (this.breakerTrips(missing.length, checked)) {
       this.logger.error(
         `Sync found ${missing.length} of ${checked} accounts missing from China Parts, ` +
@@ -153,28 +170,63 @@ export class StandingSyncProcessor extends RoleAwareWorkerHost {
           'Treating it as a wrong or empty source: nothing marked missing or deleted.',
       );
     } else {
-      const firstMiss = missing.filter((m) => !m.stampedBefore);
-      const secondMiss = missing.filter((m) => m.stampedBefore);
-      if (firstMiss.length > 0) {
-        await this.accounts.setMissingSince(
-          firstMiss.map((m) => m.scanned.id),
-          new Date(),
-        );
-      }
-      if (secondMiss.length > 0) {
-        await this.accounts.markDeleted(secondMiss.map((m) => m.scanned.id));
-        newlyDeleted.push(...secondMiss.map((m) => m.scanned));
-      }
+      firstMiss = missing.filter((m) => !m.stampedBefore).map((m) => m.scanned);
+      newlyDeleted = missing
+        .filter((m) => m.stampedBefore)
+        .map((m) => ({ ...m.scanned, standing: 'deleted' as const }));
     }
-
     const changedStanding = [...changed, ...newlyDeleted];
-    await this.standing.replaceAll(await this.accounts.listExcludedIds());
+
+    // Phase 2: Redis. The exclusion set that every read uses, and the media jobs.
+    const excluded = new Set(await this.accounts.listExcludedIds());
+    for (const account of changedStanding) {
+      if (account.standing === 'good') excluded.delete(account.id);
+      else excluded.add(account.id);
+    }
+    await this.standing.replaceAll([...excluded]);
+    await this.enqueueMediaSync(changedStanding, startedAt);
+
+    // Phase 3: MongoDB, last, because it is what the next run compares against.
+    if (updates.length > 0) await this.accounts.applyDisplayUpdates(updates);
+    if (firstMiss.length > 0) {
+      await this.accounts.setMissingSince(
+        firstMiss.map((account) => account.id),
+        new Date(),
+      );
+    }
+    if (newlyDeleted.length > 0) {
+      await this.accounts.markDeleted(
+        newlyDeleted.map((account) => account.id),
+      );
+    }
     await this.forgetCachedAccounts(changedStanding);
 
     return {
       changedStanding: changedStanding.map((account) => account.id),
       newlyDeleted: newlyDeleted.map((account) => account.id),
     };
+  }
+
+  /**
+   * One job per account whose standing changed, so its reels' files follow (FR-009, FR-014). The
+   * job id carries the cycle's start, so a re-delivered batch from the same run is not doubled.
+   */
+  private async enqueueMediaSync(
+    accounts: Scanned[],
+    startedAt: number,
+  ): Promise<void> {
+    if (accounts.length === 0) return;
+    await this.mediaQueue.addBulk(
+      accounts.map((account) => ({
+        name: MEDIA_VISIBILITY_JOB,
+        data: { accountId: account.id },
+        opts: {
+          ...MEDIA_VISIBILITY_JOB_OPTIONS,
+          // BullMQ ids may not contain ':'.
+          jobId: `media-${account.id}-${startedAt}`,
+        },
+      })),
+    );
   }
 
   private async readRemote(

@@ -1,6 +1,7 @@
 import { getConnectionToken } from '@nestjs/mongoose';
 import type { Connection } from 'mongoose';
 import { createTestApp, TestApp } from '../utils/app';
+import { createPerson } from '../utils/people';
 import { issueToken, tokenId } from '../utils/tokens';
 
 /**
@@ -58,6 +59,22 @@ describe('Sign-in with China Parts sessions (e2e)', () => {
         new Set(['customer', 'seller']),
       );
       expect(new Set(accounts?.map((a) => String(a._id))).size).toBe(2);
+    });
+  });
+
+  describe('handles (FR-015)', () => {
+    it('are unique, even for accounts provisioned one after another with the same name', async () => {
+      const people = [];
+      for (let i = 0; i < 4; i += 1) {
+        people.push(
+          await createPerson(testApp, 'customer', {
+            firstName: 'Same',
+            lastName: 'Name',
+          }),
+        );
+      }
+      const handles = people.map((person) => person.username.toLowerCase());
+      expect(new Set(handles).size).toBe(4);
     });
   });
 
