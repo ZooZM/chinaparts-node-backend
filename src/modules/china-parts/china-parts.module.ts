@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChinaPartsAccountsRepository } from './chinaparts-accounts.repository';
 import { ChinaPartsConfig } from './china-parts.config';
+import { ChinaPartsDevicesRepository } from './devices.repository';
 import { ChinaPartsExchangeRatesRepository } from './exchange-rates.repository';
 import { ChinaPartsMediaRepository } from './media.repository';
 import {
@@ -30,6 +31,7 @@ import { TokensRepository } from './tokens.repository';
     ChinaPartsAccountsRepository,
     ChinaPartsProductsRepository,
     ChinaPartsExchangeRatesRepository,
+    ChinaPartsDevicesRepository,
   ],
   exports: [
     ChinaPartsDb,
@@ -39,6 +41,7 @@ import { TokensRepository } from './tokens.repository';
     ChinaPartsMediaRepository,
     ChinaPartsProductsRepository,
     ChinaPartsExchangeRatesRepository,
+    ChinaPartsDevicesRepository,
   ],
 })
 export class ChinaPartsModule {}

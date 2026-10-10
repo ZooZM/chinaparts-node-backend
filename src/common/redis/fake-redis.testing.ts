@@ -30,9 +30,14 @@ export class FakeRedis {
   set(
     key: string,
     value: string,
-    mode?: 'EX' | 'PX',
+    mode?: 'EX' | 'PX' | 'KEEPTTL',
     ttl?: number,
   ): Promise<'OK'> {
+    if (mode === 'KEEPTTL') {
+      const previous = this.strings.get(key);
+      this.strings.set(key, { value, expiresAt: previous?.expiresAt });
+      return Promise.resolve('OK');
+    }
     const factor = mode === 'EX' ? 1000 : 1;
     this.strings.set(key, {
       value,

@@ -1,5 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { MongooseModule } from '@nestjs/mongoose';
 import { PassportModule } from '@nestjs/passport';
 import { REQUEST_AUTHENTICATOR } from '../../common/guards/request-authenticator';
@@ -13,6 +14,7 @@ import { AccountsRepository } from './accounts.repository';
 import { AccountsService } from './accounts.service';
 import { ChinaPartsAuthGuard } from './china-parts-auth.guard';
 import { ChinaPartsTokenStrategy } from './china-parts-token.strategy';
+import { LocaleInterceptor } from './locale.interceptor';
 import { PassportAuthenticator } from './passport-authenticator';
 import {
   ReelsAccount,
@@ -46,6 +48,8 @@ import { StandingSyncProcessor } from './standing-sync.processor';
     ChinaPartsAuthGuard,
     PassportAuthenticator,
     { provide: REQUEST_AUTHENTICATOR, useExisting: PassportAuthenticator },
+    // Remembers each signed-in account's language, for the language of its pushes (FR-065).
+    { provide: APP_INTERCEPTOR, useClass: LocaleInterceptor },
   ],
   exports: [
     AccountsRepository,

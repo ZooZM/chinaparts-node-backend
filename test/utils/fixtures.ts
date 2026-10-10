@@ -201,7 +201,7 @@ export async function drainQueue(
 
 /** Polls until `check` stops throwing, for outcomes that arrive through a queue or a timer. */
 export async function eventually(
-  check: () => Promise<void>,
+  check: () => Promise<void> | void,
   timeoutMs = 20_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;

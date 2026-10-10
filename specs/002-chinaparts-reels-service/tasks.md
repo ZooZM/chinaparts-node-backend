@@ -676,7 +676,7 @@ description: "Task list for the China Parts Reels Service"
 
 ### Tests for User Story 9 ⚠️
 
-- [ ] T092 [P] [US9] Write `test/e2e/notifications.e2e-spec.ts`. Override `FCM_SENDER_CLIENT` with a capturing fake.
+- [X] T092 [P] [US9] Write `test/e2e/notifications.e2e-spec.ts`. Override `FIREBASE_MESSAGING`, the thin Firebase gateway under `FCM_SENDER_CLIENT`, with a capturing fake, so the real queue, worker, device lookup, language and dead-token logic all run.
   - **Targeting**: a like on seller 1's reel targets only seller 1's `seller`-app token.
   - **No notification**: a self-like sends nothing, and unfollowing then following again sends nothing.
   - **Language**: with `Accept-Language: en` on the recipient's last request, the text is English. Otherwise it is Arabic.
@@ -686,21 +686,21 @@ description: "Task list for the China Parts Reels Service"
 
 ### Implementation for User Story 9
 
-- [ ] T093 [P] [US9] Implement `src/modules/china-parts/devices.repository.ts`: `getTokens(accountType, externalId)` runs the "Device tokens" query in contracts/chinaparts-read-model.md, with the type set for the account type and `app` = `customer` or `seller`. Add `devices.repository.spec.ts`.
-- [ ] T094 [P] [US9] Create `src/modules/push/templates/ar.ts` and `src/modules/push/templates/en.ts`, each exporting `render(type, {actorName})` for `newFollower`, `reelLike`, `reelMention`, and `reelRejected` and returning `{title, body}`. Create `src/modules/push/templates/index.ts`, which picks a template by locale and defaults to `ar`.
-- [ ] T095 [P] [US9] Implement `src/modules/push/push-payload.builder.ts` per R14, the only place a push message is composed.
+- [X] T093 [P] [US9] Implement `src/modules/china-parts/devices.repository.ts`: `getTokens(accountType, externalId)` runs the "Device tokens" query in contracts/chinaparts-read-model.md, with the type set for the account type and `app` = `customer` or `seller`. Add `devices.repository.spec.ts`.
+- [X] T094 [P] [US9] Create `src/modules/push/templates/ar.ts` and `src/modules/push/templates/en.ts`, each exporting `render(type, {actorName})` for `newFollower`, `reelLike`, `reelMention`, and `reelRejected` and returning `{title, body}`. Create `src/modules/push/templates/index.ts`, which picks a template by locale and defaults to `ar`.
+- [X] T095 [P] [US9] Implement `src/modules/push/push-payload.builder.ts` per R14, the only place a push message is composed.
   - **`build(job, recipientLocale, actorName?)`**: returns `{ notification: {title, body}, data: {source:'reels', type, actorId?, reelId?}, android: { ttl: 86400000 }, apns: { headers: { 'apns-expiration': <now + 24 h> } } }`.
   - **Tests**: `push-payload.builder.spec.ts` asserts the exact key set for every type and fails on any extra field (SC-015).
-- [ ] T096 [US9] Implement `src/modules/push/fcm-push.client.ts` (token `FCM_SENDER_CLIENT`).
+- [X] T096 [US9] Implement `src/modules/push/fcm-push.client.ts` (token `FCM_SENDER_CLIENT`) over `src/modules/push/firebase-messaging.ts` (token `FIREBASE_MESSAGING`, the only file that imports `firebase-admin`).
   - **Apps**: create one `firebase-admin` app per non-empty `FCM_CUSTOMER_CREDENTIALS_JSON` and `FCM_SELLER_CREDENTIALS_JSON`. With empty credentials, it logs a warning and sends nothing.
   - **`sendMulticast(app, tokens, message)`**: accepts only a `PushPayloadBuilder` result and skips tokens in `push:dead:{sha256}`. It uses `sendEachForMulticast`, and marks `messaging/registration-token-not-registered` and `invalid-registration-token` as dead for 30 days.
   - **Tests**: `fcm-push.client.spec.ts`.
-- [ ] T097 [US9] Implement real delivery in `src/modules/push/push.processor.ts` and `src/modules/push/queued-push.sender.ts`.
+- [X] T097 [US9] Implement real delivery in `src/modules/push/push.processor.ts` and `src/modules/push/queued-push.sender.ts`.
   - **Queue**: `src/modules/push/push.processor.ts` uses the BullMQ queue `REELS_PUSH` (worker role only). `src/modules/push/queued-push.sender.ts` implements `PUSH_SENDER` by enqueueing a `PushJob` with 3 attempts and exponential backoff.
   - **Job handling**: load the recipient and actor `reels_accounts`, get the devices through `DevicesRepository`, build the message with `PushPayloadBuilder` using the recipient's `locale`, and send it.
   - **Wiring**: replace the no-op sender in `src/modules/push/push.module.ts`.
   - **Tests**: `push.processor.spec.ts`.
-- [ ] T098 [US9] Implement `src/modules/accounts/locale.interceptor.ts` and register it as `APP_INTERCEPTOR` in `src/modules/accounts/accounts.module.ts`. For signed-in requests, it reads `Accept-Language` and maps it to `ar` or `en`. It calls `AccountsService.recordLocale` only when the value differs from the `locale` in the caller's `auth:acct:` cache entry, which it then updates. Add `locale.interceptor.spec.ts`.
+- [X] T098 [US9] Implement `src/modules/accounts/locale.interceptor.ts` and register it as `APP_INTERCEPTOR` in `src/modules/accounts/accounts.module.ts`. For signed-in requests, it reads `Accept-Language` and maps it to `ar` or `en`. It calls `AccountsService.recordLocale` only when the value differs from the `locale` in the caller's `auth:acct:` cache entry, which it then updates. Add `locale.interceptor.spec.ts`.
 
 **Checkpoint**: Notifications reach China Parts devices.
 
