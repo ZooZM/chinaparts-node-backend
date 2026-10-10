@@ -1,0 +1,145 @@
+# Local development only. Usage: docker compose -f docker-compose.local.yml up -d --build
+# Adds a MySQL with the China Parts fixtures and a MinIO (S3-compatible) next to Mongo and Redis.
+# Nothing here has authentication that is fit for anything but a laptop.
+x-app-env: &app-env
+  MONGODB_URI: mongodb://mongo:27017/reels?directConnection=true
+  REDIS_URL: redis://redis:6379
+  CHINAPARTS_MYSQL_HOST: mysql
+  CHINAPARTS_MYSQL_PORT: '3306'
+  S3_ENDPOINT: http://minio:9000
+  # The browser-facing address of the public bucket, not the in-network one.
+  MEDIA_PUBLIC_BASE_URL: http://localhost:9000/reels-public
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: chinaparts-reels:local
+  env_file:
+    - .env
+  depends_on:
+    mongo:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+    mysql:
+      condition: service_healthy
+    minio-init:
+      condition: service_completed_successfully
+  networks:
+    - reels-net
+
+services:
+  api:
+    <<: *app
+    ports:
+      - '3000:3000'
+    environment:
+      <<: *app-env
+      WORKER_ROLE: api
+
+  worker:
+    <<: *app
+    environment:
+      <<: *app-env
+      WORKER_ROLE: worker
+
+  mongo:
+    image: mongo:7
+    # Single-node replica set without auth. The member is named localhost so that a process on
+    # the host can use replicaSet=rs0; containers connect with directConnection=true instead.
+    command: ['--replSet', 'rs0', '--bind_ip_all']
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          mongosh --quiet --eval
+          "try { rs.status().ok } catch (e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'localhost:27017'}]}).ok }"
+          | grep -q 1
+      interval: 5s
+      timeout: 10s
+      retries: 10
+      start_period: 10s
+    networks:
+      - reels-net
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - reels-net
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root_local
+      MYSQL_DATABASE: chinaparts_dev
+    command: ['--character-set-server=utf8mb4', '--collation-server=utf8mb4_unicode_ci']
+    ports:
+      - '3306:3306'
+    volumes:
+      # Run in this order: schema, then seed data, then the read-only grants.
+      - ./test/fixtures/chinaparts-schema.sql:/docker-entrypoint-initdb.d/01-chinaparts-schema.sql:ro
+      - ./test/fixtures/chinaparts-seed.sql:/docker-entrypoint-initdb.d/02-chinaparts-seed.sql:ro
+      - ./test/fixtures/grants.sql:/docker-entrypoint-initdb.d/03-grants.sql:ro
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ['CMD-SHELL', 'mysqladmin ping -h localhost -uroot -proot_local --silent']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      - reels-net
+
+  minio:
+    image: minio/minio
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio123
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - minio_data:/data
+    networks:
+      - reels-net
+
+  minio-init:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -c
+      - >-
+        until mc alias set local http://minio:9000 minio minio123; do sleep 1; done &&
+        mc mb --ignore-existing local/reels-private &&
+        mc mb --ignore-existing local/reels-public &&
+        mc anonymous set download local/reels-public
+    networks:
+      - reels-net
+
+volumes:
+  mongo_data:
+  redis_data:
+  mysql_data:
+  minio_data:
+
+networks:
+  reels-net:
+    driver: bridge

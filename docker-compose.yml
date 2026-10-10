@@ -1,0 +1,95 @@
+# Production / staging stack (in-Kingdom host, see docs/operations.md).
+# The API and the worker run the same image. WORKER_ROLE decides which of them starts queue
+# processors, so the API can scale on its own. Usage: docker compose up -d --build api worker
+x-app-env: &app-env
+  MONGODB_URI: mongodb://${MONGO_ROOT_USERNAME}:${MONGO_ROOT_PASSWORD}@mongo:27017/${MONGO_DB_NAME:-reels}?authSource=admin&replicaSet=rs0
+  REDIS_URL: redis://redis:6379
+
+x-app: &app
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: chinaparts-reels:latest
+  restart: unless-stopped
+  env_file:
+    - .env
+  depends_on:
+    mongo:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  healthcheck:
+    test: ['CMD', 'curl', '-f', 'http://localhost:3000/health/live']
+    interval: 30s
+    timeout: 5s
+    retries: 3
+    start_period: 20s
+  networks:
+    - reels-net
+
+services:
+  api:
+    <<: *app
+    container_name: chinaparts-reels-api
+    ports:
+      # Bound to localhost: the reverse proxy in front terminates TLS.
+      - '${API_BIND:-127.0.0.1}:${API_PORT:-3010}:3000'
+    environment:
+      <<: *app-env
+      WORKER_ROLE: api
+
+  worker:
+    <<: *app
+    container_name: chinaparts-reels-worker
+    environment:
+      <<: *app-env
+      WORKER_ROLE: worker
+
+  mongo:
+    image: mongo:7
+    container_name: chinaparts-reels-mongo
+    restart: unless-stopped
+    # Replica set + keyfile authentication. Not published: only the stack's own network can reach it.
+    entrypoint: ['bash', '/usr/local/bin/mongo-entrypoint.sh']
+    command: ['--replSet', 'rs0', '--bind_ip_all', '--keyFile', '/data/configdb/keyfile']
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGO_DB_NAME:-reels}
+    volumes:
+      - reels_mongodb_data:/data/db
+      - reels_mongodb_config:/data/configdb
+      - ./docker/mongo-entrypoint.sh:/usr/local/bin/mongo-entrypoint.sh:ro
+      - ./docker/mongo-healthcheck.sh:/usr/local/bin/mongo-healthcheck.sh:ro
+    healthcheck:
+      test: ['CMD', 'bash', '/usr/local/bin/mongo-healthcheck.sh']
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - reels-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: chinaparts-reels-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - reels_redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - reels-net
+
+volumes:
+  reels_mongodb_data:
+  reels_mongodb_config:
+  reels_redis_data:
+
+networks:
+  reels-net:
+    driver: bridge

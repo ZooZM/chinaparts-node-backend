@@ -1,0 +1,17 @@
+node_modules
+dist
+coverage
+.git
+.github
+.env
+.env.*
+!.env.example
+.local-media
+.DS_Store
+*.log
+specs
+.specify
+docs
+docker
+test
+scripts
