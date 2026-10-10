@@ -56,10 +56,21 @@ export class PushProcessor extends RoleAwareWorkerHost {
     if (devices.length === 0) return;
 
     const message = this.builder.build(job.data, recipient.locale, actor?.name);
-    await this.fcm.sendMulticast(
+    const result = await this.fcm.sendMulticast(
       recipient.accountType,
       devices.map((device) => device.token),
       message,
+    );
+
+    // For the SC-010 report (scripts/metrics/latency-report.sh): the time from the event to the
+    // send. The type and the numbers only: no id, no name, nothing that identifies anyone.
+    this.logger.log(
+      JSON.stringify({
+        event: 'push.delivered',
+        type: job.data.type,
+        sent: result.sent,
+        deliveryLatencyMs: Date.now() - job.timestamp,
+      }),
     );
   }
 }

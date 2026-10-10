@@ -744,26 +744,26 @@ description: "Task list for the China Parts Reels Service"
     - set `viewerId` to null on its product taps
     - delete the account document
   - **Tests**: add `account-cleanup.processor.spec.ts` and `test/e2e/account-cleanup.e2e-spec.ts`. The e2e test deletes customer 2 in MySQL, runs `runSync()` twice and drains the job, and asserts that nothing remains and the counters are correct.
-- [ ] T102 [P] Write `test/e2e/read-only.e2e-spec.ts` for SC-006.
+- [X] T102 [P] Write `test/e2e/read-only.e2e-spec.ts` for SC-006.
   - **Checksums**: run `CHECKSUM TABLE` over every table in `chinaparts_dev` as `reels_audit` before and after a full scripted flow (sign in, upload, like, comment, report, follow, sync, cleanup), and assert equality.
   - **Grants**: as `reels_ro`, `INSERT INTO customers ...` and `SELECT email FROM customers` both fail with access denied.
-- [ ] T103 [P] Write `test/e2e/access-matrix.e2e-spec.ts`.
+- [X] T103 [P] Write `test/e2e/access-matrix.e2e-spec.ts`.
   - **Matrix**: encode every row of the contracts/rest-api.md endpoint tables (EP1 to EP32) with its access level. For each endpoint, assert the right outcome signed out, with a customer token, with a seller token, with a suspended seller token, and with the admin key.
   - **Standing exemptions**: EP10, EP16, and author-EP22 succeed for the suspended seller.
   - **Explicit levels**: using `DiscoveryService`, assert that every registered route carries an explicit `@Access()`, so nothing relies on the default.
   - This covers constitution V's security review.
-- [ ] T104 [P] Create `.github/workflows/deploy.yml` and `.github/workflows/diagnostics.yml`, mirroring Ciro's pattern (memory: deployment pipeline).
+- [X] T104 [P] Create `.github/workflows/deploy.yml` and `.github/workflows/diagnostics.yml`, mirroring Ciro's pattern (memory: deployment pipeline).
   - **`deploy.yml`**: deploys over SSH on push to `main`, running `git fetch origin main && git reset --hard origin/main` and then `docker compose up -d --build api worker`.
   - **`diagnostics.yml`**: a manual `workflow_dispatch` that prints `docker compose ps`, `/health/ready`, and the env variable names only. It never prints container logs, which would copy reels data to GitHub outside the Kingdom (R17).
-- [ ] T105 [P] Create `scripts/backup-mongo.sh`, which runs `mongodump --archive --gzip`, uploads to the private bucket under `backups/`, and prunes backups older than 14 days. Create `docs/operations.md` covering:
+- [X] T105 [P] Create `scripts/backup-mongo.sh`, which runs `mongodump --archive --gzip`, uploads to the private bucket under `backups/`, and prunes backups older than 14 days. Create `docs/operations.md` covering:
   - in-Kingdom hosting (R17) and the rule that no logs or error reports leave the Kingdom
   - the residency audit steps for SC-015, including the push payload check
   - the backup schedule, `WORKER_ROLE` scaling, and reading logs over SSH
-- [ ] T106 [P] Add latency measurement for SC-004 and SC-010 in `src/modules/reels/reels-moderation.service.ts`, `src/modules/push/push.processor.ts`, and `scripts/metrics/latency-report.sh`.
+- [X] T106 [P] Add latency measurement for SC-004 and SC-010 in `src/modules/reels/reels-moderation.service.ts`, `src/modules/push/push.processor.ts`, and `scripts/metrics/latency-report.sh`.
   - **Logs**: `src/modules/reels/reels-moderation.service.ts` logs a structured `publishLatencyMs` (upload to publish), and `src/modules/push/push.processor.ts` logs `deliveryLatencyMs` (event to send). Both go to in-Kingdom logs only.
   - **Report**: create `scripts/metrics/latency-report.sh`, which computes p95 for each from the logs over SSH, and document it in `docs/operations.md`.
-- [ ] T107 [P] Create the load test `scripts/load/feed.k6.js`. 500 virtual users run EP1 paging with mixed signed-in and guest traffic over 5 minutes, with the threshold `http_req_duration{p(95)}<1000` (SC-003). A second scenario runs EP26 account search with the threshold `p(95)<300` (R9). Document how to run it in `docs/operations.md`.
-- [ ] T108 [P] Create `docs/launch-gates.md` with sign-off owners for each item:
+- [X] T107 [P] Create the load test `scripts/load/feed.k6.js`. 500 virtual users run EP1 paging with mixed signed-in and guest traffic over 5 minutes, with the threshold `http_req_duration{p(95)}<1000` (SC-003). A second scenario runs EP26 account search with the threshold `p(95)<300` (R9). Document how to run it in `docs/operations.md`.
+- [X] T108 [P] Create `docs/launch-gates.md` with sign-off owners for each item:
   - the Sightengine immediate-deletion setting, data processing addendum, and written no-retention confirmation (R13, FR-073)
   - every item of the China Parts verification checklist in contracts/chinaparts-read-model.md, including exchange rates and preferred currency
   - the residency audit, including the push payload audit (SC-015)

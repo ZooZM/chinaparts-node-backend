@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import type { Job } from 'bullmq';
 import { Types } from 'mongoose';
@@ -48,8 +49,8 @@ function setup(
     { sendMulticast },
     { get: () => 'worker' } as unknown as ConfigService,
   );
-  const run = (job: PushJob) =>
-    processor.process({ data: job } as Job<PushJob>);
+  const run = (job: PushJob, timestamp = Date.now()) =>
+    processor.process({ data: job, timestamp } as Job<PushJob>);
   return { run, findByIdsLean, getTokens, sendMulticast };
 }
 
@@ -136,6 +137,34 @@ describe('PushProcessor (research R14, FR-063 to FR-066)', () => {
       notification: { body: string };
     };
     expect(message.notification.body).toContain('شخص ما');
+  });
+
+  it('logs how long the notification took from the event to the send, and nothing personal (SC-010)', async () => {
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+    try {
+      const { run } = setup();
+
+      await run(like, Date.now() - 2_500);
+
+      const entry = JSON.parse(String(log.mock.calls[0][0])) as Record<
+        string,
+        unknown
+      >;
+      expect(Object.keys(entry).sort()).toEqual([
+        'deliveryLatencyMs',
+        'event',
+        'sent',
+        'type',
+      ]);
+      expect(entry).toMatchObject({
+        event: 'push.delivered',
+        type: 'reelLike',
+      });
+      expect(entry.deliveryLatencyMs).toBeGreaterThanOrEqual(2_500);
+      expect(entry.deliveryLatencyMs).toBeLessThan(10_000);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it('lets a failure through, so the queue retries it', async () => {

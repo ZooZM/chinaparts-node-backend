@@ -6,7 +6,14 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['eslint.config.mjs', 'dist/**', 'coverage/**', 'node_modules/**'],
+    ignores: [
+      'eslint.config.mjs',
+      'dist/**',
+      'coverage/**',
+      'node_modules/**',
+      // Runs in k6's own JavaScript runtime (ES modules, `__ENV`, `__VU`), not in Node or the TS project.
+      'scripts/load/**',
+    ],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,

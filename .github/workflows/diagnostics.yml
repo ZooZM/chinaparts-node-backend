@@ -1,0 +1,53 @@
+name: Server diagnostics
+
+# Run by hand from the Actions tab when the server needs looking at.
+#
+# It prints container STATUS, the readiness answer, the disk, and the NAMES of the environment
+# variables. It never prints container logs: GitHub stores workflow output outside the Kingdom, and
+# the logs can contain reels data (docs/operations.md, "Hosting and data residency"). To read logs,
+# SSH to the server.
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostics:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect diagnostics
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT }}
+          timeout: 5m
+          # Never abort: every section should run even if one fails.
+          script_stop: false
+          envs: DEPLOY_PATH
+          script: |
+            cd "$DEPLOY_PATH" || exit 0
+            # The port is whatever .env says, else the compose default.
+            port=$(sed -n 's/^API_PORT=//p' .env | tail -1 | tr -d '"')
+
+            echo "==================== CONTAINER STATUS ===================="
+            docker compose ps || docker ps -a
+
+            echo ""
+            echo "==================== READINESS (status code and dependency states only) ===================="
+            # The body names which dependency is down, never any data.
+            curl -s -m 10 -w '\nHTTP %{http_code}\n' "http://127.0.0.1:${port:-3010}/health/ready" || echo "readiness check failed"
+
+            echo ""
+            echo "==================== LIVENESS ===================="
+            curl -s -o /dev/null -m 5 -w 'HTTP %{http_code}\n' "http://127.0.0.1:${port:-3010}/health/live" || echo "liveness check failed"
+
+            echo ""
+            echo "==================== DISK SPACE ===================="
+            df -h / || true
+
+            echo ""
+            echo "==================== ENV KEYS PRESENT (names only, no values) ===================="
+            # Only the NAMES, so nothing secret reaches the log.
+            sed -n 's/^\([A-Z0-9_]*\)=.*/\1/p' .env | sort || echo "no .env"

@@ -1,0 +1,69 @@
+name: Deploy the Reels service to the in-Kingdom server
+
+# Runs on every push to main, and by hand from the Actions tab. The runner only handles code: it
+# SSHes into the server and the server builds and starts the containers. Nothing from the service's
+# data passes through GitHub (docs/operations.md, "Hosting and data residency").
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# One deploy at a time: two overlapping `docker compose up --build` runs fight over the same files.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        env:
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SERVER_PORT }}
+          timeout: 15m # The image build takes a few minutes
+          script_stop: true # Abort on the first failing command
+          envs: DEPLOY_PATH
+          script: |
+            cd "$DEPLOY_PATH"
+
+            echo "Fetching the latest code..."
+            # Mirror origin/main exactly. A plain `git pull` aborts when the server's branch has
+            # diverged ("Need to specify how to reconcile divergent branches"), which under
+            # `script_stop` would end every deploy without a word. A hard reset is safe: `.env` is
+            # gitignored, so it is never touched.
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "Building and starting the API and the worker..."
+            # Only the application containers: MongoDB and Redis keep running and keep their data.
+            docker compose up -d --build api worker
+
+            echo "Removing old images..."
+            docker image prune -f
+
+            echo "Waiting for the API to be ready..."
+            # The port is whatever .env says, else the compose default.
+            port=$(sed -n 's/^API_PORT=//p' .env | tail -1 | tr -d '"')
+            # /health/ready answers 200 only when MongoDB, Redis and China Parts' MySQL all answer.
+            # Only the status code is printed: never a body, never a log line.
+            ready=0
+            for attempt in $(seq 1 30); do
+              code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://127.0.0.1:${port:-3010}/health/ready" || true)
+              echo "attempt $attempt: HTTP $code"
+              if [ "$code" = "200" ]; then ready=1; break; fi
+              sleep 5
+            done
+            if [ "$ready" != "1" ]; then
+              echo "The API did not become ready. Read the logs over SSH (docs/operations.md)."
+              exit 1
+            fi
+
+            echo "Deployment finished."
