@@ -3,12 +3,15 @@ import { Document, Types } from 'mongoose';
 
 export type FollowDocument = Follow & Document;
 
-@Schema({ timestamps: { createdAt: true, updatedAt: false } })
+@Schema({
+  collection: 'follows',
+  timestamps: { createdAt: true, updatedAt: false },
+})
 export class Follow {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'ReelsAccount', required: true })
   followerId: Types.ObjectId;
 
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'ReelsAccount', required: true })
   followeeId: Types.ObjectId;
 
   createdAt?: Date;

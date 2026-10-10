@@ -1,9 +1,10 @@
-import { IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsOptional, IsString } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { MaxLengthFromConfig } from '../../../common/validation/max-length-from-config';
 
 /**
- * v3 (FR-060): multipart upload body — the `video`/`thumbnail` files
- * themselves are handled by Multer (`FileInterceptor`), not this DTO.
+ * The text fields of the multipart upload. The `video` and `thumbnail` files themselves are
+ * handled by Multer, not by this DTO.
  */
 export class CreateReelDto {
   @Transform(({ value }: { value: unknown }) =>
@@ -11,6 +12,6 @@ export class CreateReelDto {
   )
   @IsOptional()
   @IsString()
-  @MaxLength(2200)
+  @MaxLengthFromConfig('REEL_MAX_DESCRIPTION_LENGTH')
   description?: string;
 }

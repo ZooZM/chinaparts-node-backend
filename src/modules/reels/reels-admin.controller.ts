@@ -1,38 +1,34 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  Patch,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
-import { AdminKeyGuard } from './admin-key.guard';
-import { ReelsService } from './reels.service';
+import { Body, Controller, Get, Param, Patch, Query } from '@nestjs/common';
+import { Access } from '../../common/guards/access.decorator';
 import { AdminHiddenQueryDto } from './dto/admin-hidden-query.dto';
 import { AdminModerationDto } from './dto/admin-moderation.dto';
+import { ReelsService } from './reels.service';
+import type { AdminHiddenReelDto, Page } from './reels.repository';
 
 /**
- * v4 (FR-071): the secured, non-user-facing admin moderation surface —
- * deliberately a SEPARATE controller from `ReelsController` (mirrors
- * `ReelsRedirectController`'s pattern) so `AdminKeyGuard` is the ONLY guard
- * on these routes; `ReelsController`'s class-level `JwtAuthGuard` never
- * applies here. No admin UI in v1 — operated via API tooling only.
+ * The secured, non-user-facing operator surface (FR-057, FR-058, FR-059). It is reached with the
+ * operator key only: `@Access('admin')` makes the global guard ignore user sessions here, so a
+ * China Parts login never grants access. There is no operator UI: the surface is used through API
+ * tooling.
  */
-@UseGuards(AdminKeyGuard)
 @Controller('api/reels')
+@Access('admin')
 export class ReelsAdminController {
   constructor(private readonly reelsService: ReelsService) {}
 
-  // Two path segments (`moderation/hidden`) — does not collide with
-  // ReelsController's single-segment `GET /api/reels/:id`.
+  // Two path segments, so it never collides with `GET /api/reels/:id` in ReelsController.
   @Get('moderation/hidden')
-  listHidden(@Query() query: AdminHiddenQueryDto) {
+  listHidden(
+    @Query() query: AdminHiddenQueryDto,
+  ): Promise<Page<AdminHiddenReelDto>> {
     return this.reelsService.listHiddenReels(query);
   }
 
   @Patch(':id/moderation')
-  moderateReel(@Param('id') id: string, @Body() dto: AdminModerationDto) {
+  moderateReel(
+    @Param('id') id: string,
+    @Body() dto: AdminModerationDto,
+  ): Promise<{ id: string; status: string }> {
     return this.reelsService.adminModerateReel(id, dto.action);
   }
 }

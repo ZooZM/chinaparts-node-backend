@@ -1,162 +1,133 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
-import { join } from 'path';
-import { Reel, ReelDocument, ReelStatus } from './schemas/reel.schema';
-import { User, UserDocument } from '../users/schemas/user.schema';
+import { rm } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { StorageService } from '../../common/storage/storage.service';
+import { AccountsService } from '../accounts/accounts.service';
+import { ReelLifecycleService } from './lifecycle/reel-lifecycle.service';
 import { MODERATION_PROVIDER } from './moderation/moderation-provider';
 import type {
   ModerationProvider,
   ModerationVerdict,
 } from './moderation/moderation-provider';
 import { ReelsNotificationsService } from './reels-notifications.service';
+import { REELS_REPOSITORY } from './reels.repository';
+import type {
+  ModerationCandidate,
+  ReelMentionRecord,
+  ReelsRepository,
+} from './reels.repository';
 
 /**
- * v3 (FR-062–FR-066): the moderation pipeline's actual logic, deliberately
- * kept free of any BullMQ/`WorkerHost` plumbing so it can run either behind
- * the real queue (`ReelsModerationProcessor`, production) or be invoked
- * directly (tests — a live Redis-backed Worker is real infrastructure the
- * test suite should not need, mirroring how `reels.e2e-spec.ts` already
- * avoids importing `AppModule`). `moderateReel` is the ONLY code path that
- * writes a status transition out of `pending_moderation`.
+ * The screening pipeline's logic (FR-029 to FR-031), kept free of any BullMQ plumbing so it runs
+ * behind the real queue (`ReelsModerationProcessor`) and directly in tests. `moderateReel` is the
+ * only code path that moves a reel out of `pending_moderation`.
+ *
+ * It fails closed: if screening cannot run, `moderateReel` throws, the reel stays pending, and the
+ * queue retries. A reel is published only on an explicit clean verdict.
  */
 @Injectable()
 export class ReelsModerationService {
   private readonly logger = new Logger(ReelsModerationService.name);
 
   constructor(
-    @InjectModel(Reel.name) private readonly reelModel: Model<ReelDocument>,
-    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
+    @Inject(REELS_REPOSITORY) private readonly reels: ReelsRepository,
     @Inject(MODERATION_PROVIDER)
     private readonly provider: ModerationProvider,
+    private readonly storage: StorageService,
+    private readonly lifecycle: ReelLifecycleService,
     private readonly notifications: ReelsNotificationsService,
+    private readonly accounts: AccountsService,
   ) {}
 
   async moderateReel(reelId: string): Promise<void> {
-    if (!Types.ObjectId.isValid(reelId)) return;
-    const reel = await this.reelModel.findById(reelId).exec();
-    // No-op: the reel was deleted mid-review, or a prior attempt already
-    // decided it (safe under retries/duplicate enqueues — R17).
-    if (!reel || reel.status !== ReelStatus.PENDING_MODERATION) return;
+    const reel = await this.reels.getModerationCandidate(reelId);
+    // Gone: the owner deleted it mid-review.
+    if (!reel) return;
 
-    const uploadedAt = reel.createdAt ?? new Date();
-    const videoPath = this.toLocalPath(reel.videoUrl);
+    if (reel.status === 'published') {
+      // A retry after the status changed but moving the files failed. Re-screening would be
+      // wrong (it is already decided), so only put the files where the rule says (research R12).
+      await this.lifecycle.syncMediaVisibility(reel);
+      return;
+    }
+    // Decided by a previous attempt, a report, or an operator: nothing to do (safe under retries
+    // and duplicate enqueues).
+    if (reel.status !== 'pending_moderation') return;
 
-    // Fail-closed (FR-066): letting this throw propagate to the caller is
-    // the point — the reel simply stays pending_moderation and is retried.
-    const result = await this.provider.analyze(videoPath, reel.description);
+    // Letting a failure propagate is the point: the reel simply stays pending and is retried.
+    const verdict = await this.screen(reel);
 
-    const verdictLatencyMs = Date.now() - uploadedAt.getTime();
-    this.logger.log(
-      `Reel ${reelId} verdict: ${result.verdict} (${verdictLatencyMs}ms since upload — SC-018)`,
-    );
-
-    if (result.verdict === 'clean') {
+    if (verdict.verdict === 'clean') {
       await this.publish(reel);
     } else {
-      await this.reject(reel, result);
+      await this.reject(reel, verdict);
     }
   }
 
-  /** R17: reels found stuck in `pending_moderation` past `staleMs`. */
-  async findStalePendingIds(staleMs: number): Promise<string[]> {
-    const stale = await this.reelModel
-      .find({
-        status: ReelStatus.PENDING_MODERATION,
-        updatedAt: { $lt: new Date(Date.now() - staleMs) },
-      })
-      .select('_id')
-      .lean()
-      .exec();
-    return stale.map((doc) => doc._id.toString());
+  /** Reels stuck in `pending_moderation` past `staleMs`: input for the retry sweep (FR-031). */
+  findStalePendingIds(staleMs: number): Promise<string[]> {
+    return this.reels.findStalePendingIds(staleMs);
   }
 
-  private toLocalPath(videoUrl: string): string {
-    return join(process.cwd(), videoUrl.replace(/^\/+/, ''));
+  /** Downloads the private video, asks the provider, and always deletes the temp copy. */
+  private async screen(reel: ModerationCandidate): Promise<ModerationVerdict> {
+    const videoPath = await this.storage.downloadToTemp(
+      this.storage.privateBucket,
+      reel.media.videoKey,
+    );
+    try {
+      return await this.provider.analyze(videoPath, reel.description);
+    } finally {
+      // The temp file lives in its own directory, so remove the directory.
+      await rm(dirname(videoPath), { recursive: true, force: true });
+    }
   }
 
-  private async publish(reel: ReelDocument): Promise<void> {
-    const updated = await this.reelModel
-      .findOneAndUpdate(
-        { _id: reel._id, status: ReelStatus.PENDING_MODERATION },
-        { $set: { status: ReelStatus.PUBLISHED, publishedAt: new Date() } },
-      )
-      .exec();
-    // A concurrent/retried attempt already decided it — never double-fire.
-    if (!updated) return;
+  private async publish(reel: ModerationCandidate): Promise<void> {
+    // Guarded: a concurrent or retried attempt that already decided it gets null here, and then
+    // nothing below runs a second time.
+    const published = await this.reels.publishPending(reel.id);
+    if (!published) return;
 
-    const mentions = await this.blockFilteredMentions(reel);
+    await this.lifecycle.onPublished(published);
     await this.notifications.notifyMentions({
-      actorId: reel.creatorId.toString(),
-      reelId: reel._id.toString(),
-      mentions,
+      actorId: published.creatorId,
+      reelId: published.id,
+      mentions: await this.blockFilteredMentions(published),
     });
+
+    this.logger.log(
+      JSON.stringify({
+        event: 'reel.published',
+        reelId: published.id,
+        publishLatencyMs: Date.now() - reel.createdAt.getTime(),
+      }),
+    );
   }
 
   /**
-   * Plan rule 3: a block created between upload and verdict (in either
-   * direction) suppresses that mention notification at fan-out time.
+   * A block created between upload and verdict, in either direction, suppresses that mention's
+   * notification at fan-out time.
    */
   private async blockFilteredMentions(
-    reel: ReelDocument,
-  ): Promise<{ userId: string; username: string }[]> {
+    reel: ModerationCandidate,
+  ): Promise<ReelMentionRecord[]> {
     if (reel.mentions.length === 0) return [];
-    const [creator, reverseBlockers] = await Promise.all([
-      this.userModel
-        .findById(reel.creatorId)
-        .select('blockedUsers')
-        .lean()
-        .exec(),
-      this.userModel
-        .find({
-          blockedUsers: reel.creatorId,
-          _id: { $in: reel.mentions.map((m) => m.userId) },
-        })
-        .select('_id')
-        .lean()
-        .exec(),
-    ]);
-    const creatorBlocked = new Set(
-      (creator?.blockedUsers ?? []).map((id) => id.toString()),
-    );
-    const reverseBlocked = new Set(
-      reverseBlockers.map((u) => u._id.toString()),
-    );
-    return reel.mentions
-      .filter(
-        (m) =>
-          !creatorBlocked.has(m.userId.toString()) &&
-          !reverseBlocked.has(m.userId.toString()),
-      )
-      .map((m) => ({ userId: m.userId.toString(), username: m.username }));
+    const blocked = new Set(await this.accounts.getBlockSet(reel.creatorId));
+    return reel.mentions.filter((mention) => !blocked.has(mention.userId));
   }
 
   private async reject(
-    reel: ReelDocument,
-    result: ModerationVerdict,
+    reel: ModerationCandidate,
+    verdict: ModerationVerdict,
   ): Promise<void> {
-    const updated = await this.reelModel
-      .findOneAndUpdate(
-        { _id: reel._id, status: ReelStatus.PENDING_MODERATION },
-        {
-          $set: {
-            status: ReelStatus.REJECTED,
-            moderation: {
-              verdict: result.verdict,
-              flaggedSource: result.flaggedSource,
-              categories: result.categories ?? [],
-              providerRef: result.providerRef,
-              completedAt: new Date(),
-            },
-          },
-        },
-      )
-      .exec();
-    if (!updated) return;
+    const rejected = await this.reels.rejectPending(reel.id, verdict);
+    if (!rejected) return;
 
+    // The files were never made public, so there is nothing to move: only tell the owner.
     await this.notifications.notifyReelRejected({
-      recipientId: reel.creatorId.toString(),
-      reelId: reel._id.toString(),
+      recipientId: rejected.creatorId,
+      reelId: rejected.id,
     });
   }
 }

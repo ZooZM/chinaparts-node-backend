@@ -1,6 +1,11 @@
-import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, Min } from 'class-validator';
 import { Type } from 'class-transformer';
 
+/**
+ * Page sizes are clamped by the service, not rejected here: `limit=100` returns the configured
+ * maximum rather than a 400 (research R9, R24). The default also comes from configuration, so no
+ * default is set on the DTO.
+ */
 export class FeedQueryDto {
   @IsOptional()
   @IsString()
@@ -10,20 +15,20 @@ export class FeedQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(25)
-  limit?: number = 10;
+  limit?: number;
 
   @IsOptional()
   @IsString()
   creatorId?: string;
 
-  // FR-047a: hashtag-scoped feed (no '#', case-insensitive exact match).
+  // A hashtag-scoped feed. Matched after normalization, so the '#' and the spelling variant do
+  // not matter (FR-049a, FR-051).
   @IsOptional()
   @IsString()
   hashtag?: string;
 
-  // v6: the target user for the public Reposts list (GET /reposted). Defaults
-  // to the caller when omitted.
+  // The target account for the public Reposts list (GET /reposted). Required for signed-out
+  // visitors, and defaults to the caller when signed in.
   @IsOptional()
   @IsString()
   userId?: string;
@@ -38,11 +43,10 @@ export class CommentsQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(50)
-  limit?: number = 20;
+  limit?: number;
 }
 
-// v5 (FR-084, contracts §31): feeds the mention-suggestion overlay.
+// Feeds the mention-suggestion overlay. Page size 50, at most 100: not one of the FR-070 limits.
 export class FollowingUsersQueryDto {
   @IsOptional()
   @IsString()
@@ -52,6 +56,5 @@ export class FollowingUsersQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(100)
-  limit?: number = 50;
+  limit?: number;
 }

@@ -128,6 +128,21 @@ export class AccountsService {
     return toMe(result);
   }
 
+  /**
+   * Resolves normalized handles to the accounts that own them, for the @mentions in a reel's
+   * description. A handle nobody owns is simply absent from the result.
+   */
+  async resolveMentions(
+    normalizedHandles: string[],
+  ): Promise<Array<{ userId: string; username: string }>> {
+    const found =
+      await this.accounts.findByUsernamesNormalized(normalizedHandles);
+    return found.map((account) => ({
+      userId: account._id.toString(),
+      username: account.username,
+    }));
+  }
+
   async recordLocale(userId: string, locale: Locale): Promise<void> {
     await this.accounts.updateLocale(userId, locale);
   }

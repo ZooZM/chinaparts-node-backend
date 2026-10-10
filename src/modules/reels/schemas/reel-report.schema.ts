@@ -15,9 +15,12 @@ export enum ReelReportReason {
 // makes a duplicate submission an idempotent no-op at the DB layer. Reports
 // are retained for admin audit (GET /moderation/hidden, FR-071) even after
 // a reel is restored or rejected.
-@Schema({ timestamps: { createdAt: true, updatedAt: false } })
+@Schema({
+  collection: 'reel_reports',
+  timestamps: { createdAt: true, updatedAt: false },
+})
 export class ReelReport {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'ReelsAccount', required: true })
   reporterId: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, ref: 'Reel', required: true })
@@ -27,7 +30,8 @@ export class ReelReport {
   reason: ReelReportReason;
 
   // Required non-empty (service-validated) iff reason === 'other'; absent otherwise.
-  @Prop({ required: false, maxlength: 500 })
+  // The limit is configurable (REEL_REPORT_REASON_MAX_LENGTH) and enforced by the DTO.
+  @Prop({ required: false, maxlength: 5000 })
   customReason?: string;
 
   createdAt?: Date;

@@ -1,39 +1,56 @@
-import {
-  Controller,
-  Get,
-  Param,
-  Post,
-  Query,
-  Request,
-  UseGuards,
-} from '@nestjs/common';
-import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
-import { ReelsService } from './reels.service';
+import { Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Access } from '../../common/guards/access.decorator';
+import type {
+  AuthenticatedUser,
+  ViewerContext,
+} from '../../common/http/viewer-request';
+import { CurrentUser, Viewer } from '../../common/http/viewer.decorator';
 import { SearchQueryDto } from './dto/search-query.dto';
+import { ReelsService } from './reels.service';
+import type {
+  CreatorProfileDto,
+  Page,
+  UserSearchResultDto,
+} from './reels.repository';
 
-@UseGuards(JwtAuthGuard)
 @Controller('api/users')
 export class ReelsUsersController {
   constructor(private readonly reelsService: ReelsService) {}
 
-  // Static route above `:id/profile` for the same reason as ReelsController.
+  // Static route above `:id/profile`, for the same reason as in ReelsController.
   @Get('search')
-  searchUsers(@Request() req: any, @Query() query: SearchQueryDto) {
-    return this.reelsService.searchUsers(req.user.userId, query);
+  @Access('signed-in')
+  searchUsers(
+    @CurrentUser() user: AuthenticatedUser,
+    @Query() query: SearchQueryDto,
+  ): Promise<Page<UserSearchResultDto>> {
+    return this.reelsService.searchUsers(user, query);
   }
 
   @Get(':id/profile')
-  getProfile(@Request() req: any, @Param('id') id: string) {
-    return this.reelsService.getProfile(id, req.user.userId);
+  @Access('optional')
+  getProfile(
+    @Viewer() viewer: ViewerContext,
+    @Param('id') id: string,
+  ): Promise<CreatorProfileDto> {
+    return this.reelsService.getProfile(viewer, id);
   }
 
   @Post(':id/follow')
-  toggleFollow(@Request() req: any, @Param('id') id: string) {
-    return this.reelsService.toggleFollow(id, req.user.userId);
+  @Access('signed-in')
+  toggleFollow(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<{ following: boolean; followersCount: number }> {
+    return this.reelsService.toggleFollow(user, id);
   }
 
   @Post(':id/block')
-  toggleBlock(@Request() req: any, @Param('id') id: string) {
-    return this.reelsService.toggleBlock(id, req.user.userId);
+  @Access('signed-in')
+  toggleBlock(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ): Promise<{ blocked: boolean }> {
+    return this.reelsService.toggleBlock(user, id);
   }
 }

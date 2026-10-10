@@ -1,36 +1,28 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
-import { PushService } from '../notifications/push.service';
-import { DeviceTokensRepository } from '../notifications/device-tokens.repository';
-import { User, UserDocument } from '../users/schemas/user.schema';
-import {
-  NotificationEvent,
-  NotificationEventDocument,
-  NotificationEventType,
-} from './schemas/notification-event.schema';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { PUSH_SENDER } from '../push/push-sender';
+import type { PushSender } from '../push/push-sender';
+import { NotificationEventsRepository } from './notification-events.repository';
+import { NotificationEventType } from './schemas/notification-event.schema';
 
 /**
- * FR-054: durable notification events + end-to-end FCM push (clarified —
- * full delivery ships this phase, not just the event schema). Reuses the
- * existing `NotificationsModule` (PushService + DeviceTokensRepository) so
- * no new push plumbing is introduced.
+ * Durable notification events and push delivery (FR-062 to FR-066).
  *
- * A user's own actions on their own content never notify (self-events are
- * rejected below). Re-doing the same action after undoing it (unlike/
- * re-like, unfollow/re-follow) does not re-notify — the unique index on
- * `notification_events` makes a duplicate write a silent no-op.
+ * A user's own actions on their own content never notify (self-events are skipped). Repeating an
+ * action after undoing it does not notify again: the unique index behind
+ * `NotificationEventsRepository.recordIfNew` makes a duplicate a silent no-op. The event is
+ * recorded before delivery is attempted, and a failure anywhere in here is logged and swallowed,
+ * never propagated: the like or follow that triggered it must succeed regardless (FR-066).
+ *
+ * What a push says, in which language, and to which devices is decided where it is delivered, not
+ * here: a job carries ids only (research R14).
  */
 @Injectable()
 export class ReelsNotificationsService {
   private readonly logger = new Logger(ReelsNotificationsService.name);
 
   constructor(
-    @InjectModel(NotificationEvent.name)
-    private readonly eventModel: Model<NotificationEventDocument>,
-    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
-    private readonly pushService: PushService,
-    private readonly deviceTokens: DeviceTokensRepository,
+    private readonly events: NotificationEventsRepository,
+    @Inject(PUSH_SENDER) private readonly sender: PushSender,
   ) {}
 
   async notifyNewFollower(params: {
@@ -38,25 +30,7 @@ export class ReelsNotificationsService {
     recipientId: string;
   }): Promise<void> {
     if (params.actorId === params.recipientId) return;
-    const wasNew = await this.recordEvent({
-      type: NotificationEventType.NEW_FOLLOWER,
-      actorId: params.actorId,
-      recipientId: params.recipientId,
-    });
-    if (!wasNew) return;
-    const actor = await this.userModel
-      .findById(params.actorId)
-      .select('name')
-      .lean()
-      .exec();
-    await this.push(params.recipientId, {
-      title: actor?.name ?? 'Someone',
-      body: 'notif_new_follower',
-      data: {
-        type: NotificationEventType.NEW_FOLLOWER,
-        actorId: params.actorId,
-      },
-    });
+    await this.deliver(NotificationEventType.NEW_FOLLOWER, params);
   }
 
   async notifyReelLike(params: {
@@ -65,35 +39,12 @@ export class ReelsNotificationsService {
     reelId: string;
   }): Promise<void> {
     if (params.actorId === params.recipientId) return;
-    const wasNew = await this.recordEvent({
-      type: NotificationEventType.REEL_LIKE,
-      actorId: params.actorId,
-      recipientId: params.recipientId,
-      reelId: params.reelId,
-    });
-    if (!wasNew) return;
-    const actor = await this.userModel
-      .findById(params.actorId)
-      .select('name')
-      .lean()
-      .exec();
-    await this.push(params.recipientId, {
-      title: actor?.name ?? 'Someone',
-      body: 'notif_new_like',
-      data: {
-        type: NotificationEventType.REEL_LIKE,
-        actorId: params.actorId,
-        reelId: params.reelId,
-      },
-    });
+    await this.deliver(NotificationEventType.REEL_LIKE, params);
   }
 
   /**
-   * FR-047/054: mention trigger point. Called at reel-creation time (no
-   * upload endpoint exists yet — v1 has no create-reel flow, so this is
-   * exercised directly by tests and by the future upload feature; the demo
-   * seed calls `parseHashtagsAndMentions` without invoking this method, so
-   * seeded content never spams mention pushes at boot).
+   * Called at the publish transition, once per mentioned account. A seed never calls it, so demo
+   * content cannot spam mention pushes at boot.
    */
   async notifyMentions(params: {
     actorId: string;
@@ -102,92 +53,46 @@ export class ReelsNotificationsService {
   }): Promise<void> {
     for (const mention of params.mentions) {
       if (mention.userId === params.actorId) continue;
-
-      const wasNew = await this.recordEvent({
-        type: NotificationEventType.REEL_MENTION,
+      await this.deliver(NotificationEventType.REEL_MENTION, {
         actorId: params.actorId,
         recipientId: mention.userId,
         reelId: params.reelId,
-      });
-      if (!wasNew) continue;
-
-      const actor = await this.userModel
-        .findById(params.actorId)
-        .select('name')
-        .lean()
-        .exec();
-
-      await this.push(mention.userId, {
-        title: actor?.name ?? 'Someone',
-        body: 'notif_mention',
-        data: {
-          type: NotificationEventType.REEL_MENTION,
-          actorId: params.actorId,
-          reelId: params.reelId,
-        },
       });
     }
   }
 
   /**
-   * v3 (FR-064): the moderation worker rejected an uploaded reel. System-
-   * originated — no actor, so the self-skip guard in the other `notify*`
-   * methods does not apply here. Recorded even if push delivery fails
-   * (FR-054 semantics); a clean publish is deliberately silent (clarified).
+   * Screening rejected an uploaded reel. System-originated: there is no actor, so the self-skip
+   * does not apply. A clean publish is deliberately silent.
    */
   async notifyReelRejected(params: {
     recipientId: string;
     reelId: string;
   }): Promise<void> {
-    const wasNew = await this.recordEvent({
-      type: NotificationEventType.REEL_REJECTED,
+    await this.deliver(NotificationEventType.REEL_REJECTED, {
       actorId: null,
       recipientId: params.recipientId,
       reelId: params.reelId,
     });
-    if (!wasNew) return;
-    await this.push(params.recipientId, {
-      title: 'CiroChat',
-      body: 'notif_rejected',
-      data: {
-        type: NotificationEventType.REEL_REJECTED,
-        reelId: params.reelId,
-      },
-    });
   }
 
-  /** Returns true if a new event row was written (i.e. this is not a repeat). */
-  private async recordEvent(params: {
-    type: NotificationEventType;
-    actorId: string | null;
-    recipientId: string;
-    reelId?: string;
-  }): Promise<boolean> {
-    try {
-      await this.eventModel.create({
-        type: params.type,
-        actorId: params.actorId ? new Types.ObjectId(params.actorId) : null,
-        recipientId: new Types.ObjectId(params.recipientId),
-        reelId: params.reelId ? new Types.ObjectId(params.reelId) : undefined,
-      });
-      return true;
-    } catch {
-      // Duplicate-key: an identical event already exists (dedup — R14).
-      return false;
-    }
-  }
-
-  private async push(
-    recipientId: string,
-    payload: { title: string; body: string; data: Record<string, string> },
+  private async deliver(
+    type: NotificationEventType,
+    params: { actorId: string | null; recipientId: string; reelId?: string },
   ): Promise<void> {
-    const tokens = await this.deviceTokens.getTokens(recipientId);
-    for (const doc of tokens) {
-      await this.pushService.sendPush(doc.token, payload);
-    }
-    if (tokens.length === 0) {
-      this.logger.debug(
-        `No device tokens for ${recipientId} — event recorded, push skipped`,
+    try {
+      const isNew = await this.events.recordIfNew({ type, ...params });
+      if (!isNew) return;
+      await this.sender.send({
+        recipientId: params.recipientId,
+        type,
+        // Only what exists: a job has no key for an absent actor or reel.
+        ...(params.actorId ? { actorId: params.actorId } : {}),
+        ...(params.reelId ? { reelId: params.reelId } : {}),
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Notification ${type} for ${params.recipientId} failed: ${String(error)}`,
       );
     }
   }

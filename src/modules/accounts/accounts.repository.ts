@@ -6,6 +6,7 @@ import {
   isDuplicateKeyError,
 } from '../../common/mongo/duplicate-key';
 import { BaseRepository } from '../../common/repositories/base.repository';
+import { escapeRegex } from '../../common/text/escape-regex';
 import type {
   AccountType,
   Locale,
@@ -33,6 +34,13 @@ export interface ProvisionData extends DisplayUpdate {
   username: string;
   usernameNormalized: string;
   locale: Locale;
+}
+
+/** The denormalized counters on an account. */
+export interface AccountCounters {
+  followersCount: number;
+  followingCount: number;
+  totalLikes: number;
 }
 
 export type ProvisionResult =
@@ -290,7 +298,10 @@ export class AccountsRepository extends BaseRepository<ReelsAccountDocument> {
       .exec();
   }
 
-  /** Atomic counter changes, never read-modify-write. Deltas may be negative. */
+  /**
+   * Atomic counter changes, never read-modify-write. Deltas may be negative. Returns the counters
+   * after the change, or null when the account does not exist.
+   */
   async incrementCounters(
     id: string,
     deltas: {
@@ -298,13 +309,59 @@ export class AccountsRepository extends BaseRepository<ReelsAccountDocument> {
       followingCount?: number;
       totalLikes?: number;
     },
-  ): Promise<void> {
+  ): Promise<AccountCounters | null> {
     const objectId = toObjectId(id);
-    if (!objectId) return;
+    if (!objectId) return null;
     const inc = Object.fromEntries(
       Object.entries(deltas).filter(([, delta]) => delta !== 0),
     );
-    if (Object.keys(inc).length === 0) return;
-    await this.model.updateOne({ _id: objectId }, { $inc: inc }).exec();
+    return this.model
+      .findByIdAndUpdate(
+        objectId,
+        Object.keys(inc).length > 0 ? { $inc: inc } : {},
+        { new: true },
+      )
+      .select({ followersCount: 1, followingCount: 1, totalLikes: 1 })
+      .lean<AccountCounters>()
+      .exec();
+  }
+
+  /**
+   * Accounts whose handle or public name contains the (already normalized) query, in name order.
+   * The ranking by exact match and followers comes with the search task (US6).
+   */
+  async searchByNormalized(params: {
+    normalizedQuery: string;
+    excludeIds: string[];
+    skip: number;
+    limit: number;
+  }): Promise<{
+    total: number;
+    items: Array<
+      Pick<ReelsAccountLean, '_id' | 'username' | 'name' | 'avatarUrl'>
+    >;
+  }> {
+    const pattern = { $regex: escapeRegex(params.normalizedQuery) };
+    const filter = {
+      _id: { $nin: toObjectIds(params.excludeIds) },
+      standing: { $ne: 'deleted' as const },
+      $or: [{ usernameNormalized: pattern }, { nameNormalized: pattern }],
+    };
+    const [total, items] = await Promise.all([
+      this.model.countDocuments(filter).exec(),
+      this.model
+        .find(filter)
+        .sort({ name: 1, _id: 1 })
+        .skip(params.skip)
+        .limit(params.limit)
+        .select({ username: 1, name: 1, avatarUrl: 1 })
+        .lean<
+          Array<
+            Pick<ReelsAccountLean, '_id' | 'username' | 'name' | 'avatarUrl'>
+          >
+        >()
+        .exec(),
+    ]);
+    return { total, items };
   }
 }

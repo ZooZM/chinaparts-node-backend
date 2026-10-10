@@ -1,65 +1,130 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { User, UserDocument } from '../users/schemas/user.schema';
-import { Reel, ReelDocument, ReelStatus } from './schemas/reel.schema';
+import { ErrorCode } from '../../common/errors/error-codes';
+import { isDuplicateKeyError } from '../../common/mongo/duplicate-key';
+import { escapeRegex } from '../../common/text/escape-regex';
+import { AccountsRepository } from '../accounts/accounts.repository';
+import { Follow, FollowDocument } from './schemas/follow.schema';
+import {
+  NotificationEvent,
+  NotificationEventDocument,
+} from './schemas/notification-event.schema';
+import {
+  ReelComment,
+  ReelCommentDocument,
+} from './schemas/reel-comment.schema';
+import { ReelLike, ReelLikeDocument } from './schemas/reel-like.schema';
 import {
   ReelReport,
   ReelReportDocument,
   ReelReportReason,
 } from './schemas/reel-report.schema';
 import { ReelRepost, ReelRepostDocument } from './schemas/reel-repost.schema';
-import {
-  NotificationEvent,
-  NotificationEventDocument,
-} from './schemas/notification-event.schema';
-import { unlink } from 'fs/promises';
-import { join } from 'path';
-import { ReelLike, ReelLikeDocument } from './schemas/reel-like.schema';
 import { ReelSave, ReelSaveDocument } from './schemas/reel-save.schema';
-import { ReelView, ReelViewDocument } from './schemas/reel-view.schema';
 import { ReelShare, ReelShareDocument } from './schemas/reel-share.schema';
 import {
-  ReelComment,
-  ReelCommentDocument,
-} from './schemas/reel-comment.schema';
-import { Follow, FollowDocument } from './schemas/follow.schema';
+  ReelGuestView,
+  ReelGuestViewDocument,
+} from './schemas/reel-guest-view.schema';
+import { ReelView, ReelViewDocument } from './schemas/reel-view.schema';
 import {
-  AdminHiddenReelDto,
+  Reel,
+  ReelDocument,
+  ReelLean,
+  ReelStatus,
+} from './schemas/reel.schema';
+import {
+  AccountSummary,
+  AdminHiddenReelRecord,
   CommentDto,
-  CreatorProfileDto,
   FollowedUserDto,
-  ReelDto,
+  ModerationCandidate,
+  ModerationOutcome,
+  Page,
+  ProfileRecord,
+  ReelDeletion,
+  ReelMediaRecord,
+  ReelRecord,
   ReelReportReasonValue,
   ReelsRepository,
-  ReelVideoRecord,
+  ReelSnapshot,
   UserSearchResultDto,
 } from './reels.repository';
 
-/** v6: one viewer-relevant reposter (followed ∪ self) for the badge stack. */
-interface RepostReposter {
-  id: string;
-  username: string;
-  name: string;
-  avatarUrl: string;
-}
+/** The interface keeps reasons as plain strings; the schema stores the enum. Same values. */
+const REPORT_REASONS: Record<ReelReportReasonValue, ReelReportReason> = {
+  spam: ReelReportReason.SPAM,
+  nudity: ReelReportReason.NUDITY,
+  violence: ReelReportReason.VIOLENCE,
+  hate_speech: ReelReportReason.HATE_SPEECH,
+  other: ReelReportReason.OTHER,
+};
 
-/** v6: per-video repost attribution — primary label + avatar stack + count. */
+/** One viewer-relevant reposter (followed accounts plus the viewer) for the badge stack. */
+type RepostReposter = AccountSummary;
+
+/** Per-video repost attribution: the primary label, the avatar stack, and the relevant count. */
 interface RepostAttribution {
   primary: RepostReposter;
   top: RepostReposter[];
   count: number;
 }
 
+type AccountLookup = {
+  _id: Types.ObjectId;
+  username?: string;
+  name?: string;
+  avatarUrl?: string | null;
+};
+
+function toObjectId(id: string): Types.ObjectId | null {
+  return Types.ObjectId.isValid(id) ? new Types.ObjectId(id) : null;
+}
+
+function toObjectIds(ids: string[]): Types.ObjectId[] {
+  return ids.map(toObjectId).filter((id): id is Types.ObjectId => id !== null);
+}
+
+function iso(date: Date | undefined): string {
+  return (date ?? new Date(0)).toISOString();
+}
+
+function mediaOf(reel: Pick<ReelLean, 'media'>): ReelMediaRecord {
+  return {
+    videoKey: reel.media.videoKey,
+    thumbnailKey: reel.media.thumbnailKey,
+    location: reel.media.location,
+  };
+}
+
+function snapshotOf(reel: ReelLean): ReelSnapshot {
+  return {
+    id: reel._id.toString(),
+    creatorId: reel.creatorId.toString(),
+    status: reel.status,
+    media: mediaOf(reel),
+    hashtagsNormalized: reel.hashtagsNormalized,
+  };
+}
+
+function summaryOf(account: AccountLookup): AccountSummary {
+  return {
+    id: account._id.toString(),
+    username: account.username ?? '',
+    name: account.name ?? '',
+    avatarUrl: account.avatarUrl ?? null,
+  };
+}
+
 /**
- * Mongoose-backed `ReelsRepository` (v2 — replaces `ReelsMockStore`).
+ * Mongoose-backed `ReelsRepository`. It only reads and writes data (research R22): it never calls
+ * a service, never builds a media URL, and returns the outcome of any status change for the
+ * caller to act on.
  *
- * Cursor convention (unchanged from v1 mock): an opaque, ever-increasing
- * integer offset encoded as a string. The main feed wraps the offset modulo
- * the catalog size so `nextCursor` is never null (FR-007); scoped
- * feeds/lists (creator, hashtag, liked, saved, search) are finite and stop
- * once the offset reaches the filtered count.
+ * Cursor convention for now: an opaque, ever-increasing integer offset encoded as a string. The
+ * main feed wraps the offset modulo the catalog size so `nextCursor` is never null; scoped feeds
+ * and lists are finite. The keyset cursors of research R9 replace this story by story.
  */
 @Injectable()
 export class ReelsDbRepository implements ReelsRepository {
@@ -71,85 +136,87 @@ export class ReelsDbRepository implements ReelsRepository {
     private readonly saveModel: Model<ReelSaveDocument>,
     @InjectModel(ReelView.name)
     private readonly viewModel: Model<ReelViewDocument>,
+    @InjectModel(ReelGuestView.name)
+    private readonly guestViewModel: Model<ReelGuestViewDocument>,
     @InjectModel(ReelShare.name)
     private readonly shareModel: Model<ReelShareDocument>,
     @InjectModel(ReelComment.name)
     private readonly commentModel: Model<ReelCommentDocument>,
     @InjectModel(Follow.name)
     private readonly followModel: Model<FollowDocument>,
-    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     @InjectModel(NotificationEvent.name)
     private readonly notificationEventModel: Model<NotificationEventDocument>,
     @InjectModel(ReelReport.name)
     private readonly reportModel: Model<ReelReportDocument>,
     @InjectModel(ReelRepost.name)
     private readonly repostModel: Model<ReelRepostDocument>,
-    private readonly configService: ConfigService,
+    private readonly accounts: AccountsRepository,
   ) {}
 
-  // ── Id helpers ─────────────────────────────────────────────────────────
-
-  private toObjectId(id: string): Types.ObjectId | null {
-    if (!Types.ObjectId.isValid(id)) return null;
-    return new Types.ObjectId(id);
-  }
+  // ── Cursor helper ───────────────────────────────────────────────────────
 
   private parseCursor(cursor: string | undefined): number {
     if (cursor === undefined) return 0;
     const parsed = Number(cursor);
     if (!Number.isInteger(parsed) || parsed < 0) {
-      throw new BadRequestException('Invalid cursor');
+      throw new BadRequestException({
+        error: ErrorCode.INVALID_CURSOR,
+        message: 'Invalid cursor',
+      });
     }
     return parsed;
   }
 
-  // ── Hydration (raw docs -> ReelDto, batched to avoid N+1) ───────────────
+  // ── Hydration (raw docs -> ReelRecord, batched to avoid N+1) ────────────
 
   private async hydrate(
-    reels: ReelDocument[],
+    reels: ReelLean[],
     viewerId: string,
-  ): Promise<ReelDto[]> {
+  ): Promise<ReelRecord[]> {
     if (reels.length === 0) return [];
-    const viewerObjectId = this.toObjectId(viewerId);
+    const viewerObjectId = toObjectId(viewerId);
     const creatorIds = [...new Set(reels.map((r) => r.creatorId.toString()))];
+    const creatorObjectIds = toObjectIds(creatorIds);
     const videoIds = reels.map((r) => r._id);
 
     const [creators, followed, liked, saved, reposted] = await Promise.all([
-      this.userModel
-        .find({ _id: { $in: creatorIds.map((id) => new Types.ObjectId(id)) } })
-        .select('_id name username avatarUrl')
-        .lean()
-        .exec(),
+      this.accounts.findByIdsLean(creatorIds, [
+        'name',
+        'username',
+        'avatarUrl',
+        'accountType',
+      ]),
       viewerObjectId
         ? this.followModel
             .find({
               followerId: viewerObjectId,
-              followeeId: {
-                $in: creatorIds.map((id) => new Types.ObjectId(id)),
-              },
+              followeeId: { $in: creatorObjectIds },
             })
-            .lean()
+            .select({ followeeId: 1 })
+            .lean<Array<{ followeeId: Types.ObjectId }>>()
             .exec()
         : [],
       viewerObjectId
         ? this.likeModel
             .find({ userId: viewerObjectId, videoId: { $in: videoIds } })
-            .lean()
+            .select({ videoId: 1 })
+            .lean<Array<{ videoId: Types.ObjectId }>>()
             .exec()
         : [],
       viewerObjectId
         ? this.saveModel
             .find({ userId: viewerObjectId, videoId: { $in: videoIds } })
-            .lean()
+            .select({ videoId: 1 })
+            .lean<Array<{ videoId: Types.ObjectId }>>()
             .exec()
         : [],
-      // v4 (FR-073): whether the CALLER reposted this reel (drives the
-      // action-column button's active state) — independent of whether the
-      // item is a For You repost-injected copy (that's `repostedBy` below).
+      // Whether the CALLER reposted this reel (drives the action-column button), independent of
+      // whether the item is a For You repost-injected copy (that is `repostedBy` below).
       viewerObjectId
         ? this.repostModel
             .find({ reposterId: viewerObjectId, videoId: { $in: videoIds } })
-            .lean()
+            .select({ videoId: 1 })
+            .lean<Array<{ videoId: Types.ObjectId }>>()
             .exec()
         : [],
     ]);
@@ -162,11 +229,11 @@ export class ReelsDbRepository implements ReelsRepository {
 
     return reels.map((r) => {
       const creator = creatorById.get(r.creatorId.toString());
+      const id = r._id.toString();
       return {
-        id: r._id.toString(),
-        videoUrl: r.videoUrl,
-        thumbnailUrl: r.thumbnailUrl,
-        createdAt: (r.createdAt as Date).toISOString(),
+        id,
+        media: mediaOf(r),
+        createdAt: iso(r.createdAt),
         description: r.description,
         hashtags: r.hashtags,
         mentions: r.mentions.map((m) => ({
@@ -177,7 +244,8 @@ export class ReelsDbRepository implements ReelsRepository {
           id: r.creatorId.toString(),
           name: creator?.name ?? 'Unknown',
           username: creator?.username ?? '',
-          avatarUrl: creator?.avatarUrl ?? '',
+          avatarUrl: creator?.avatarUrl ?? null,
+          accountType: creator?.accountType ?? 'customer',
           viewerFollowing: followedSet.has(r.creatorId.toString()),
         },
         status: r.status,
@@ -185,58 +253,32 @@ export class ReelsDbRepository implements ReelsRepository {
         likesCount: r.likesCount,
         commentsCount: r.commentsCount,
         sharesCount: r.sharesCount,
-        viewerLiked: likedSet.has(r._id.toString()),
-        viewerSaved: savedSet.has(r._id.toString()),
-        // v4: default null — the For You merge (listFeed) overwrites this
-        // on its repost-injected items only; every other path (including
-        // the Following feed) always serves organic items.
+        viewerLiked: likedSet.has(id),
+        viewerSaved: savedSet.has(id),
+        // Null by default: the For You merge overwrites this on its repost-injected items only,
+        // and every other path (the Following feed included) serves organic items.
         repostedBy: null,
-        // v6: viewer-relevant reposters (followed ∪ self) — count + a few
-        // avatars for the badge stack; overwritten on the For You + profile
-        // reposts-list paths, 0/[] everywhere else.
+        // Viewer-relevant reposters (followed plus self): a count and a few avatars for the
+        // badge stack, overwritten on the For You and profile Reposts paths, 0 and [] elsewhere.
         repostersCount: 0,
         topReposters: [],
-        viewerReposted: repostedSet.has(r._id.toString()),
+        viewerReposted: repostedSet.has(id),
       };
     });
   }
 
-  private toRecord(r: ReelDocument): ReelVideoRecord {
-    return {
-      id: r._id.toString(),
-      creatorId: r.creatorId.toString(),
-      videoUrl: r.videoUrl,
-      thumbnailUrl: r.thumbnailUrl,
-      description: r.description,
-      hashtags: r.hashtags,
-      mentions: r.mentions.map((m) => ({
-        userId: m.userId.toString(),
-        username: m.username,
-      })),
-      createdAt: (r.createdAt as Date).toISOString(),
-    };
-  }
-
-  private excludeFilter(excludeCreatorIds: string[]) {
+  private excludeFilter(excludeCreatorIds: string[]): Record<string, unknown> {
     if (excludeCreatorIds.length === 0) return {};
-    return {
-      creatorId: {
-        $nin: excludeCreatorIds
-          .map((id) => this.toObjectId(id))
-          .filter((id): id is Types.ObjectId => id !== null),
-      },
-    };
+    return { creatorId: { $nin: toObjectIds(excludeCreatorIds) } };
   }
 
   /**
-   * v3 (FR-061): composes with every other read filter via plain object
-   * merge — MongoDB ANDs sibling top-level keys, so this narrows any query
-   * to "published, OR mine" regardless of what else the caller filters on.
-   * Applied to every read path (data-model.md v3 "Visibility & block
-   * filtering" — never enforced client-side).
+   * Composes with every other read filter by plain object merge (MongoDB ANDs sibling top-level
+   * keys), narrowing any query to "published, OR mine". Applied to every read path: visibility is
+   * never enforced client-side.
    */
   private visibilityFilter(viewerId: string): Record<string, unknown> {
-    const viewerObjectId = this.toObjectId(viewerId);
+    const viewerObjectId = toObjectId(viewerId);
     if (!viewerObjectId) return { status: ReelStatus.PUBLISHED };
     return {
       $or: [{ status: ReelStatus.PUBLISHED }, { creatorId: viewerObjectId }],
@@ -244,97 +286,83 @@ export class ReelsDbRepository implements ReelsRepository {
   }
 
   /**
-   * v4 (FR-076, R20): reels reposted by users the viewer follows (or the
-   * viewer themselves), attributed to the MOST RECENT qualifying reposter
-   * per reel. Reposter-edge blocks are applied here (FR-078) — independent
-   * of the creator-edge `excludeCreatorIds` filter the caller also applies.
-   * "Still followed" is implicit: `followeeIds` is read fresh on every
-   * call, so an unfollow removes the injection on the very next request.
+   * Reels reposted by accounts the viewer follows (or the viewer themselves), attributed to the
+   * most recent qualifying reposter per reel. Reposter-edge blocks are applied here, independent
+   * of the creator-edge `excludeCreatorIds` filter the caller also applies. "Still followed" is
+   * implicit: followee ids are read fresh on every call, so an unfollow removes the injection on
+   * the very next request.
    */
   private async getRepostAttributions(
     viewerId: string,
     excludeCreatorIds: string[],
   ): Promise<Map<string, RepostAttribution>> {
-    const viewerObjectId = this.toObjectId(viewerId);
+    const viewerObjectId = toObjectId(viewerId);
     if (!viewerObjectId) return new Map();
 
     const follows = await this.followModel
       .find({ followerId: viewerObjectId })
-      .select('followeeId')
-      .lean()
+      .select({ followeeId: 1 })
+      .lean<Array<{ followeeId: Types.ObjectId }>>()
       .exec();
-    const reposterIds = [
+    const reposterIds = toObjectIds([
       ...new Set([...follows.map((f) => f.followeeId.toString()), viewerId]),
-    ]
-      .map((id) => this.toObjectId(id))
-      .filter((id): id is Types.ObjectId => id !== null);
+    ]);
     if (reposterIds.length === 0) return new Map();
 
     const reposts = await this.repostModel
       .find({ reposterId: { $in: reposterIds } })
       .sort({ createdAt: -1 })
-      .lean()
+      .lean<Array<{ videoId: Types.ObjectId; reposterId: Types.ObjectId }>>()
       .exec();
     if (reposts.length === 0) return new Map();
 
-    // Most-recent-first order already sorted above; collect ALL relevant
-    // reposters per videoId (v6 — the badge shows a count + a few avatars),
-    // preserving recency order.
-    const repostsByVideo = new Map<string, (typeof reposts)[number][]>();
-    for (const r of reposts) {
-      const key = r.videoId.toString();
+    // Collect every relevant reposter per video, most recent first: the badge shows a count and a
+    // few avatars.
+    const repostsByVideo = new Map<string, typeof reposts>();
+    for (const repost of reposts) {
+      const key = repost.videoId.toString();
       const list = repostsByVideo.get(key);
-      if (list) {
-        list.push(r);
-      } else {
-        repostsByVideo.set(key, [r]);
-      }
+      if (list) list.push(repost);
+      else repostsByVideo.set(key, [repost]);
     }
 
-    const videoIds = [...repostsByVideo.keys()].map((id) =>
-      this.toObjectId(id),
-    );
+    const videoIds = toObjectIds([...repostsByVideo.keys()]);
     const reposterIdsNeeded = [
       ...new Set(reposts.map((r) => r.reposterId.toString())),
-    ].map((id) => this.toObjectId(id));
+    ];
 
-    const [reels, reposterUsers] = await Promise.all([
+    const [reels, reposterAccounts] = await Promise.all([
       this.reelModel
         .find({
           _id: { $in: videoIds },
           ...this.excludeFilter(excludeCreatorIds),
           status: ReelStatus.PUBLISHED,
         })
-        .select('_id')
-        .lean()
+        .select({ _id: 1 })
+        .lean<Array<{ _id: Types.ObjectId }>>()
         .exec(),
-      this.userModel
-        .find({ _id: { $in: reposterIdsNeeded } })
-        .select('_id username name avatarUrl')
-        .lean()
-        .exec(),
+      this.accounts.findByIdsLean(reposterIdsNeeded, [
+        'username',
+        'name',
+        'avatarUrl',
+      ]),
     ]);
     const visibleVideoIds = new Set(reels.map((r) => r._id.toString()));
     const excludeReposterSet = new Set(excludeCreatorIds);
     const reposterById = new Map(
-      reposterUsers.map((u) => [u._id.toString(), u]),
+      reposterAccounts.map((account) => [account._id.toString(), account]),
     );
 
     const attributions = new Map<string, RepostAttribution>();
     for (const [videoId, list] of repostsByVideo) {
-      if (!visibleVideoIds.has(videoId)) continue; // source no longer published/blocked
+      if (!visibleVideoIds.has(videoId)) continue; // source no longer published, or blocked
       const relevant: RepostReposter[] = [];
       for (const repost of list) {
         const reposterId = repost.reposterId.toString();
-        if (excludeReposterSet.has(reposterId)) continue; // FR-078 reposter-edge block
+        if (excludeReposterSet.has(reposterId)) continue; // reposter-edge block
         const reposter = reposterById.get(reposterId);
         if (!reposter) continue;
-        relevant.push({
-          id: reposterId,
-          username: reposter.username ?? '',
-          name: reposter.name,
-          avatarUrl: reposter.avatarUrl ?? '',
-        });
+        relevant.push(summaryOf(reposter));
       }
       if (relevant.length === 0) continue;
       attributions.set(videoId, {
@@ -346,29 +374,41 @@ export class ReelsDbRepository implements ReelsRepository {
     return attributions;
   }
 
-  // ── ReelsRepository ────────────────────────────────────────────────────
+  // ── ReelsRepository ─────────────────────────────────────────────────────
 
   async createReel(params: {
+    id: string;
     creatorId: string;
-    videoUrl: string;
-    thumbnailUrl: string;
+    videoKey: string;
+    thumbnailKey: string;
     description: string;
     hashtags: string[];
+    hashtagsNormalized: string[];
     mentions: { userId: string; username: string }[];
-  }): Promise<ReelDto> {
-    const doc = await this.reelModel.create({
+  }): Promise<ReelRecord> {
+    await this.reelModel.create({
+      _id: new Types.ObjectId(params.id),
       creatorId: new Types.ObjectId(params.creatorId),
-      videoUrl: params.videoUrl,
-      thumbnailUrl: params.thumbnailUrl,
+      media: {
+        videoKey: params.videoKey,
+        thumbnailKey: params.thumbnailKey,
+        location: 'private',
+      },
       description: params.description,
       hashtags: params.hashtags,
+      hashtagsNormalized: params.hashtagsNormalized,
       mentions: params.mentions.map((m) => ({
         userId: new Types.ObjectId(m.userId),
         username: m.username,
       })),
       status: ReelStatus.PENDING_MODERATION,
     });
-    const [hydrated] = await this.hydrate([doc], params.creatorId);
+    const created = await this.reelModel
+      .findById(params.id)
+      .lean<ReelLean>()
+      .exec();
+    if (!created) throw new Error('Created reel vanished');
+    const [hydrated] = await this.hydrate([created], params.creatorId);
     return hydrated;
   }
 
@@ -379,29 +419,27 @@ export class ReelsDbRepository implements ReelsRepository {
     creatorId?: string;
     hashtag?: string;
     excludeCreatorIds: string[];
-  }): Promise<{ items: ReelDto[]; nextCursor: string | null }> {
+  }): Promise<Page<ReelRecord>> {
     const offset = this.parseCursor(params.cursor);
     const filter: Record<string, unknown> = {};
 
     if (params.creatorId) {
-      // A specific creatorId and the $nin exclusion both target the same
-      // field — they can't be merged. If the requested creator is blocked,
-      // the scoped feed is simply empty (FR-053); otherwise filter by the
-      // exact id (no need for $nin against a single already-known-safe id).
+      // A specific creatorId and the $nin exclusion both target the same field and cannot be
+      // merged. If the requested creator is excluded the scoped feed is simply empty; otherwise
+      // filter by the exact id.
       if (params.excludeCreatorIds.includes(params.creatorId)) {
         return { items: [], nextCursor: null };
       }
-      const creatorObjectId = this.toObjectId(params.creatorId);
+      const creatorObjectId = toObjectId(params.creatorId);
       if (!creatorObjectId) return { items: [], nextCursor: null };
       filter.creatorId = creatorObjectId;
     } else {
       Object.assign(filter, this.excludeFilter(params.excludeCreatorIds));
     }
     if (params.hashtag) {
-      filter.hashtags = params.hashtag.toLowerCase();
+      filter.hashtagsNormalized = params.hashtag;
     }
-    // v3 (FR-061): published, or mine — composes with whichever of the
-    // filters above are already set.
+    // Published, or mine: composes with whichever of the filters above are already set.
     Object.assign(filter, this.visibilityFilter(params.viewerId));
 
     const isScoped = Boolean(params.creatorId || params.hashtag);
@@ -409,12 +447,13 @@ export class ReelsDbRepository implements ReelsRepository {
     if (total === 0) return { items: [], nextCursor: null };
 
     if (isScoped) {
-      // Finite: creator-scoped and hashtag-scoped feeds terminate (FR-007 clarification, FR-047a).
+      // Finite: creator-scoped and hashtag-scoped feeds terminate.
       const docs = await this.reelModel
         .find(filter)
         .sort({ createdAt: -1, _id: -1 })
         .skip(offset)
         .limit(params.limit)
+        .lean<ReelLean[]>()
         .exec();
       const nextOffset = offset + params.limit;
       return {
@@ -423,29 +462,24 @@ export class ReelsDbRepository implements ReelsRepository {
       };
     }
 
-    // Main feed loops the catalog indefinitely — nextCursor is never null (FR-007).
+    // The main feed loops the catalog indefinitely: nextCursor is never null.
     const sorted = await this.reelModel
       .find(filter)
       .sort({ createdAt: -1, _id: -1 })
+      .lean<ReelLean[]>()
       .exec();
 
-    // v4 (FR-076): this IS the For You feed — merge in followees' (+ the
-    // viewer's own) reposts. Scoped feeds (creatorId/hashtag) never reach
-    // this branch, matching FR-075's "Following has no reposts" rule and
-    // FR-026/FR-047a's existing creator/hashtag-scoped semantics.
+    // This IS the For You feed: merge in followees' (and the viewer's own) reposts. Scoped feeds
+    // never reach this branch, so Following has no reposts and creator/hashtag feeds stay pure.
     const attributions = await this.getRepostAttributions(
       params.viewerId,
       params.excludeCreatorIds,
     );
 
-    const docs: ReelDocument[] = [];
+    const docs: ReelLean[] = [];
     const byId = new Map(sorted.map((d) => [d._id.toString(), d]));
     if (offset === 0 && attributions.size > 0) {
-      // R20: reposts are surfaced with priority on the very first page —
-      // the simplest faithful reading of "distribution to followers" for a
-      // catalog small enough that natural rotation would otherwise bury
-      // them. Any residual duplicate on a later loop cycle is absorbed by
-      // the client-side pagination dedup (ReelsFeedBloc, T158).
+      // Reposts are surfaced with priority on the very first page.
       const seeded = new Set<string>();
       for (const [videoId] of attributions) {
         if (docs.length >= params.limit) break;
@@ -468,9 +502,7 @@ export class ReelsDbRepository implements ReelsRepository {
     }
 
     const items = await this.hydrate(docs, params.viewerId);
-    // Attach repost attribution to whichever page items carry one (the
-    // prepended ones on page 0, or any natural-rotation item on later
-    // pages/loop cycles that matches). v6: also the count + avatar stack.
+    // Attach repost attribution to whichever page items carry one.
     for (const item of items) {
       const attribution = attributions.get(item.id);
       if (attribution) {
@@ -480,38 +512,32 @@ export class ReelsDbRepository implements ReelsRepository {
       }
     }
 
-    return {
-      items,
-      nextCursor: String(offset + params.limit),
-    };
+    return { items, nextCursor: String(offset + params.limit) };
   }
 
   /**
-   * v4 (FR-075): originals only, from users the viewer follows. Blocked
-   * followees are filtered out of the id list up front (rather than
-   * combining `$in`/`$nin` on the same `creatorId` field, which Mongo
-   * can't merge via plain-object `Object.assign`).
+   * Originals only, from accounts the viewer follows. Excluded followees are filtered out of the
+   * id list up front, rather than combining `$in` and `$nin` on the same `creatorId` field, which
+   * a plain-object merge cannot express.
    */
   async listFollowingFeed(params: {
     viewerId: string;
     cursor?: string;
     limit: number;
     excludeCreatorIds: string[];
-  }): Promise<{ items: ReelDto[]; nextCursor: string | null }> {
-    const viewerObjectId = this.toObjectId(params.viewerId);
+  }): Promise<Page<ReelRecord>> {
+    const viewerObjectId = toObjectId(params.viewerId);
     if (!viewerObjectId) return { items: [], nextCursor: null };
 
     const follows = await this.followModel
       .find({ followerId: viewerObjectId })
-      .select('followeeId')
-      .lean()
+      .select({ followeeId: 1 })
+      .lean<Array<{ followeeId: Types.ObjectId }>>()
       .exec();
     const excludeSet = new Set(params.excludeCreatorIds);
     const followeeIds = follows
-      .map((f) => f.followeeId.toString())
-      .filter((id) => !excludeSet.has(id))
-      .map((id) => this.toObjectId(id))
-      .filter((id): id is Types.ObjectId => id !== null);
+      .map((f) => f.followeeId)
+      .filter((id) => !excludeSet.has(id.toString()));
     if (followeeIds.length === 0) return { items: [], nextCursor: null };
 
     const offset = this.parseCursor(params.cursor);
@@ -527,6 +553,7 @@ export class ReelsDbRepository implements ReelsRepository {
       .sort({ createdAt: -1, _id: -1 })
       .skip(offset)
       .limit(params.limit)
+      .lean<ReelLean[]>()
       .exec();
     const nextOffset = offset + params.limit;
     return {
@@ -539,8 +566,8 @@ export class ReelsDbRepository implements ReelsRepository {
     id: string,
     viewerId: string,
     excludeCreatorIds: string[],
-  ): Promise<ReelDto | null> {
-    const objectId = this.toObjectId(id);
+  ): Promise<ReelRecord | null> {
+    const objectId = toObjectId(id);
     if (!objectId) return null;
     const doc = await this.reelModel
       .findOne({
@@ -548,6 +575,7 @@ export class ReelsDbRepository implements ReelsRepository {
         ...this.excludeFilter(excludeCreatorIds),
         ...this.visibilityFilter(viewerId),
       })
+      .lean<ReelLean>()
       .exec();
     if (!doc) return null;
     const [hydrated] = await this.hydrate([doc], viewerId);
@@ -560,14 +588,16 @@ export class ReelsDbRepository implements ReelsRepository {
   ): Promise<{
     liked: boolean;
     likesCount: number;
-    reel: ReelVideoRecord;
+    reel: { id: string; creatorId: string };
   } | null> {
-    const videoId = this.toObjectId(id);
-    const userId = this.toObjectId(viewerId);
+    const videoId = toObjectId(id);
+    const userId = toObjectId(viewerId);
     if (!videoId || !userId) return null;
-    // v3 (FR-064): engagement is only possible on published reels.
+    // Engagement is only possible on published reels.
     const reel = await this.reelModel
       .findOne({ _id: videoId, status: ReelStatus.PUBLISHED })
+      .select({ creatorId: 1, likesCount: 1 })
+      .lean<Pick<ReelLean, '_id' | 'creatorId' | 'likesCount'>>()
       .exec();
     if (!reel) return null;
 
@@ -575,33 +605,41 @@ export class ReelsDbRepository implements ReelsRepository {
       .findOneAndDelete({ userId, videoId })
       .exec();
 
-    let liked: boolean;
+    let delta = 0;
     if (existing) {
-      liked = false;
-      reel.likesCount = Math.max(0, reel.likesCount - 1);
-      await this.userModel
-        .updateOne({ _id: reel.creatorId }, { $inc: { totalLikes: -1 } })
-        .exec();
+      delta = -1;
     } else {
       try {
         await this.likeModel.create({ userId, videoId });
-        liked = true;
-        reel.likesCount += 1;
-        await this.userModel
-          .updateOne({ _id: reel.creatorId }, { $inc: { totalLikes: 1 } })
-          .exec();
-      } catch {
-        // Duplicate-key race (rapid double-tap) — another request already
-        // inserted the like; treat as already-liked, no double count.
-        liked = true;
+        delta = 1;
+      } catch (error) {
+        // A duplicate-key race (a rapid double tap): another request already inserted the like,
+        // which is the same as already-liked, with no double count.
+        if (!isDuplicateKeyError(error)) throw error;
       }
     }
-    await reel.save();
+
+    let likesCount = reel.likesCount;
+    if (delta !== 0) {
+      const updated = await this.reelModel
+        .findOneAndUpdate(
+          { _id: videoId },
+          { $inc: { likesCount: delta } },
+          { new: true },
+        )
+        .select({ likesCount: 1 })
+        .lean<{ likesCount: number }>()
+        .exec();
+      likesCount = Math.max(0, updated?.likesCount ?? likesCount + delta);
+      await this.accounts.incrementCounters(reel.creatorId.toString(), {
+        totalLikes: delta,
+      });
+    }
 
     return {
-      liked,
-      likesCount: reel.likesCount,
-      reel: this.toRecord(reel),
+      liked: !existing,
+      likesCount,
+      reel: { id: reel._id.toString(), creatorId: reel.creatorId.toString() },
     };
   }
 
@@ -613,22 +651,20 @@ export class ReelsDbRepository implements ReelsRepository {
     nextCursor: string | null;
     commentsCount: number;
   } | null> {
-    const videoId = this.toObjectId(id);
+    const videoId = toObjectId(id);
     if (!videoId) return null;
-    // v3 (FR-064): a non-published reel has no comments — nothing to serve.
+    // A non-published reel has no comments to serve.
     const reel = await this.reelModel
       .findOne({ _id: videoId, status: ReelStatus.PUBLISHED })
+      .select({ commentsCount: 1 })
+      .lean<{ commentsCount: number }>()
       .exec();
     if (!reel) return null;
 
     const offset = this.parseCursor(params.cursor);
     const filter: Record<string, unknown> = { videoId };
     if (params.excludeAuthorIds.length > 0) {
-      filter.authorId = {
-        $nin: params.excludeAuthorIds
-          .map((aid) => this.toObjectId(aid))
-          .filter((aid): aid is Types.ObjectId => aid !== null),
-      };
+      filter.authorId = { $nin: toObjectIds(params.excludeAuthorIds) };
     }
     const total = await this.commentModel.countDocuments(filter).exec();
     const docs = await this.commentModel
@@ -636,14 +672,20 @@ export class ReelsDbRepository implements ReelsRepository {
       .sort({ createdAt: -1, _id: -1 })
       .skip(offset)
       .limit(params.limit)
+      .lean<
+        Array<{
+          _id: Types.ObjectId;
+          authorId: Types.ObjectId;
+          text: string;
+          createdAt?: Date;
+        }>
+      >()
       .exec();
 
-    const authorIds = [...new Set(docs.map((d) => d.authorId.toString()))];
-    const authors = await this.userModel
-      .find({ _id: { $in: authorIds.map((aid) => new Types.ObjectId(aid)) } })
-      .select('_id name avatarUrl')
-      .lean()
-      .exec();
+    const authors = await this.accounts.findByIdsLean(
+      [...new Set(docs.map((d) => d.authorId.toString()))],
+      ['name', 'avatarUrl'],
+    );
     const authorById = new Map(authors.map((a) => [a._id.toString(), a]));
 
     const nextOffset = offset + params.limit;
@@ -654,9 +696,9 @@ export class ReelsDbRepository implements ReelsRepository {
           id: c._id.toString(),
           authorId: c.authorId.toString(),
           authorName: author?.name ?? 'Unknown',
-          authorAvatarUrl: author?.avatarUrl ?? '',
+          authorAvatarUrl: author?.avatarUrl ?? null,
           text: c.text,
-          createdAt: (c.createdAt as Date).toISOString(),
+          createdAt: iso(c.createdAt),
         };
       }),
       nextCursor: nextOffset < total ? String(nextOffset) : null,
@@ -669,35 +711,41 @@ export class ReelsDbRepository implements ReelsRepository {
     viewerId: string,
     text: string,
   ): Promise<{ comment: CommentDto; commentsCount: number } | null> {
-    const videoId = this.toObjectId(id);
-    const authorId = this.toObjectId(viewerId);
+    const videoId = toObjectId(id);
+    const authorId = toObjectId(viewerId);
     if (!videoId || !authorId) return null;
-    // v3 (FR-064): no engagement on non-published reels.
-    const reel = await this.reelModel
-      .findOne({ _id: videoId, status: ReelStatus.PUBLISHED })
-      .exec();
-    if (!reel) return null;
+    // No engagement on non-published reels.
+    const exists = await this.reelModel.exists({
+      _id: videoId,
+      status: ReelStatus.PUBLISHED,
+    });
+    if (!exists) return null;
 
     const created = await this.commentModel.create({ videoId, authorId, text });
-    reel.commentsCount += 1;
-    await reel.save();
-
-    const author = await this.userModel
-      .findById(authorId)
-      .select('name avatarUrl')
-      .lean()
+    const updated = await this.reelModel
+      .findOneAndUpdate(
+        { _id: videoId },
+        { $inc: { commentsCount: 1 } },
+        { new: true },
+      )
+      .select({ commentsCount: 1 })
+      .lean<{ commentsCount: number }>()
       .exec();
+    const [author] = await this.accounts.findByIdsLean(
+      [viewerId],
+      ['name', 'avatarUrl'],
+    );
 
     return {
       comment: {
         id: created._id.toString(),
         authorId: viewerId,
         authorName: author?.name ?? 'Unknown',
-        authorAvatarUrl: author?.avatarUrl ?? '',
+        authorAvatarUrl: author?.avatarUrl ?? null,
         text: created.text,
-        createdAt: (created.createdAt as Date).toISOString(),
+        createdAt: iso(created.createdAt),
       },
-      commentsCount: reel.commentsCount,
+      commentsCount: updated?.commentsCount ?? 0,
     };
   }
 
@@ -705,46 +753,54 @@ export class ReelsDbRepository implements ReelsRepository {
     id: string,
     viewerId: string,
   ): Promise<{ sharesCount: number } | null> {
-    const videoId = this.toObjectId(id);
-    const userId = this.toObjectId(viewerId);
+    const videoId = toObjectId(id);
+    const userId = toObjectId(viewerId);
     if (!videoId || !userId) return null;
-    // v3 (FR-064): no engagement on non-published reels.
-    const reel = await this.reelModel
-      .findOne({ _id: videoId, status: ReelStatus.PUBLISHED })
-      .exec();
-    if (!reel) return null;
+    // No engagement on non-published reels.
+    const exists = await this.reelModel.exists({
+      _id: videoId,
+      status: ReelStatus.PUBLISHED,
+    });
+    if (!exists) return null;
 
     await this.shareModel.create({ userId, videoId });
-    reel.sharesCount += 1;
-    await reel.save();
-    return { sharesCount: reel.sharesCount };
+    const updated = await this.reelModel
+      .findOneAndUpdate(
+        { _id: videoId },
+        { $inc: { sharesCount: 1 } },
+        { new: true },
+      )
+      .select({ sharesCount: 1 })
+      .lean<{ sharesCount: number }>()
+      .exec();
+    return { sharesCount: updated?.sharesCount ?? 0 };
   }
 
   async getProfile(
     userId: string,
     viewerId: string,
     excludeCreatorIds: string[],
-  ): Promise<CreatorProfileDto | null> {
-    const targetId = this.toObjectId(userId);
+  ): Promise<ProfileRecord | null> {
+    const targetId = toObjectId(userId);
     if (!targetId) return null;
     if (excludeCreatorIds.includes(userId)) return null;
 
-    const user = await this.userModel.findById(targetId).exec();
-    if (!user) return null;
+    const account = await this.accounts.findByIdLean(userId);
+    if (!account) return null;
 
-    const viewerObjectId = this.toObjectId(viewerId);
+    const viewerObjectId = toObjectId(viewerId);
     const isSelf = userId === viewerId;
-    // v3 (FR-061/FR-065): others see only published videos in the grid;
-    // the owner sees their own reels in every status (Processing/Removed
-    // badges are rendered client-side from the `status` field below).
+    // Others see only published videos in the grid; the owner sees their own reels in every
+    // status, and the `status` field below lets the app render the Processing, Removed and
+    // Under review badges.
     const videos = await this.reelModel
       .find({
         creatorId: targetId,
         ...(isSelf ? {} : { status: ReelStatus.PUBLISHED }),
       })
       .sort({ createdAt: -1, _id: -1 })
-      .select('_id thumbnailUrl status')
-      .lean()
+      .select({ media: 1, status: 1 })
+      .lean<Array<Pick<ReelLean, '_id' | 'media' | 'status'>>>()
       .exec();
     const isFollowing = viewerObjectId
       ? Boolean(
@@ -756,26 +812,24 @@ export class ReelsDbRepository implements ReelsRepository {
 
     return {
       user: {
-        id: user._id.toString(),
-        name: user.name,
-        username: user.username ?? '',
-        avatarUrl: user.avatarUrl ?? '',
-        bio: user.bio ?? '',
+        id: account._id.toString(),
+        name: account.name,
+        username: account.username,
+        avatarUrl: account.avatarUrl,
+        accountType: account.accountType,
+        bio: account.bio,
       },
       stats: {
-        followers: user.followersCount,
-        following: user.followingCount,
-        totalLikes: user.totalLikes,
+        followers: account.followersCount,
+        following: account.followingCount,
+        totalLikes: account.totalLikes,
       },
       videos: videos.map((v) => ({
         id: v._id.toString(),
-        thumbnailUrl: v.thumbnailUrl,
+        media: mediaOf(v),
         status: v.status,
       })),
-      viewer: {
-        following: isFollowing,
-        isSelf,
-      },
+      viewer: { following: isFollowing, isSelf },
     };
   }
 
@@ -784,80 +838,125 @@ export class ReelsDbRepository implements ReelsRepository {
     viewerId: string,
   ): Promise<{ following: boolean; followersCount: number } | 'self' | null> {
     if (userId === viewerId) return 'self';
-    const followeeId = this.toObjectId(userId);
-    const followerId = this.toObjectId(viewerId);
+    const followeeId = toObjectId(userId);
+    const followerId = toObjectId(viewerId);
     if (!followeeId || !followerId) return null;
-    const followee = await this.userModel.findById(followeeId).exec();
+    const followee = await this.accounts.findByIdLean(userId);
     if (!followee) return null;
 
     const existing = await this.followModel
       .findOneAndDelete({ followerId, followeeId })
       .exec();
 
-    let following: boolean;
+    let followersCount = followee.followersCount;
     if (existing) {
-      following = false;
-      await this.userModel
-        .updateOne({ _id: followeeId }, { $inc: { followersCount: -1 } })
-        .exec();
-      await this.userModel
-        .updateOne({ _id: followerId }, { $inc: { followingCount: -1 } })
-        .exec();
-      followee.followersCount = Math.max(0, followee.followersCount - 1);
-    } else {
-      try {
-        await this.followModel.create({ followerId, followeeId });
-        following = true;
-        await this.userModel
-          .updateOne({ _id: followeeId }, { $inc: { followersCount: 1 } })
-          .exec();
-        await this.userModel
-          .updateOne({ _id: followerId }, { $inc: { followingCount: 1 } })
-          .exec();
-        followee.followersCount += 1;
-      } catch {
-        following = true;
-      }
+      const counters = await this.accounts.incrementCounters(userId, {
+        followersCount: -1,
+      });
+      await this.accounts.incrementCounters(viewerId, { followingCount: -1 });
+      followersCount = Math.max(
+        0,
+        counters?.followersCount ?? followersCount - 1,
+      );
+      return { following: false, followersCount };
     }
 
-    return { following, followersCount: followee.followersCount };
+    try {
+      await this.followModel.create({ followerId, followeeId });
+    } catch (error) {
+      // A duplicate-key race: already following, with no double count.
+      if (!isDuplicateKeyError(error)) throw error;
+      return { following: true, followersCount };
+    }
+    const counters = await this.accounts.incrementCounters(userId, {
+      followersCount: 1,
+    });
+    await this.accounts.incrementCounters(viewerId, { followingCount: 1 });
+    return {
+      following: true,
+      followersCount: counters?.followersCount ?? followersCount + 1,
+    };
   }
 
   async recordView(
     id: string,
     viewerId: string,
   ): Promise<{ viewsCount: number } | null> {
-    const videoId = this.toObjectId(id);
-    const userId = this.toObjectId(viewerId);
+    const videoId = toObjectId(id);
+    const userId = toObjectId(viewerId);
     if (!videoId || !userId) return null;
-    // v3 (FR-064): no engagement on non-published reels.
+    // No engagement on non-published reels.
     const reel = await this.reelModel
       .findOne({ _id: videoId, status: ReelStatus.PUBLISHED })
+      .select({ viewsCount: 1 })
+      .lean<{ viewsCount: number }>()
       .exec();
     if (!reel) return null;
 
     try {
       await this.viewModel.create({ userId, videoId });
-      reel.viewsCount += 1;
-      await reel.save();
-    } catch {
-      // Duplicate-key: already viewed by this user — no increment (FR-048 dedup).
+    } catch (error) {
+      // Already viewed by this account: no increment (a view counts once).
+      if (!isDuplicateKeyError(error)) throw error;
+      return { viewsCount: reel.viewsCount };
     }
-    return { viewsCount: reel.viewsCount };
+    const updated = await this.reelModel
+      .findOneAndUpdate(
+        { _id: videoId },
+        { $inc: { viewsCount: 1 } },
+        { new: true },
+      )
+      .select({ viewsCount: 1 })
+      .lean<{ viewsCount: number }>()
+      .exec();
+    return { viewsCount: updated?.viewsCount ?? reel.viewsCount + 1 };
+  }
+
+  async recordGuestView(
+    id: string,
+    installationId: string,
+  ): Promise<{ viewsCount: number } | null> {
+    const videoId = toObjectId(id);
+    if (!videoId) return null;
+    const reel = await this.reelModel
+      .findOne({ _id: videoId, status: ReelStatus.PUBLISHED })
+      .select({ viewsCount: 1 })
+      .lean<{ viewsCount: number }>()
+      .exec();
+    if (!reel) return null;
+
+    try {
+      await this.guestViewModel.create({ installationId, videoId });
+    } catch (error) {
+      // This installation already viewed it: no increment.
+      if (!isDuplicateKeyError(error)) throw error;
+      return { viewsCount: reel.viewsCount };
+    }
+    const updated = await this.reelModel
+      .findOneAndUpdate(
+        { _id: videoId },
+        { $inc: { viewsCount: 1 } },
+        { new: true },
+      )
+      .select({ viewsCount: 1 })
+      .lean<{ viewsCount: number }>()
+      .exec();
+    return { viewsCount: updated?.viewsCount ?? reel.viewsCount + 1 };
   }
 
   async toggleSave(
     id: string,
     viewerId: string,
   ): Promise<{ saved: boolean } | null> {
-    const videoId = this.toObjectId(id);
-    const userId = this.toObjectId(viewerId);
+    const videoId = toObjectId(id);
+    const userId = toObjectId(viewerId);
     if (!videoId || !userId) return null;
-    // v3 (FR-064): no engagement on non-published reels.
-    const reel = await this.reelModel
-      .findOne({ _id: videoId, status: ReelStatus.PUBLISHED })
-      .exec();
-    if (!reel) return null;
+    // No engagement on non-published reels.
+    const exists = await this.reelModel.exists({
+      _id: videoId,
+      status: ReelStatus.PUBLISHED,
+    });
+    if (!exists) return null;
 
     const existing = await this.saveModel
       .findOneAndDelete({ userId, videoId })
@@ -866,33 +965,33 @@ export class ReelsDbRepository implements ReelsRepository {
 
     try {
       await this.saveModel.create({ userId, videoId });
-      return { saved: true };
-    } catch {
-      return { saved: true };
+    } catch (error) {
+      if (!isDuplicateKeyError(error)) throw error;
     }
+    return { saved: true };
   }
 
   async listLiked(
     viewerId: string,
     params: { cursor?: string; limit: number; excludeCreatorIds: string[] },
-  ): Promise<{ items: ReelDto[]; nextCursor: string | null }> {
+  ): Promise<Page<ReelRecord>> {
     return this.listByRelation(this.likeModel, viewerId, params);
   }
 
   async listSaved(
     viewerId: string,
     params: { cursor?: string; limit: number; excludeCreatorIds: string[] },
-  ): Promise<{ items: ReelDto[]; nextCursor: string | null }> {
+  ): Promise<Page<ReelRecord>> {
     return this.listByRelation(this.saveModel, viewerId, params);
   }
 
-  /** Shared implementation for listLiked/listSaved: relation-recency order, hydrated, block-filtered. */
+  /** Shared by listLiked and listSaved: relation-recency order, hydrated, exclusion-filtered. */
   private async listByRelation(
     relationModel: Model<ReelLikeDocument> | Model<ReelSaveDocument>,
     viewerId: string,
     params: { cursor?: string; limit: number; excludeCreatorIds: string[] },
-  ): Promise<{ items: ReelDto[]; nextCursor: string | null }> {
-    const userId = this.toObjectId(viewerId);
+  ): Promise<Page<ReelRecord>> {
+    const userId = toObjectId(viewerId);
     if (!userId) return { items: [], nextCursor: null };
     const offset = this.parseCursor(params.cursor);
 
@@ -904,26 +1003,13 @@ export class ReelsDbRepository implements ReelsRepository {
       .sort({ createdAt: -1, _id: -1 })
       .skip(offset)
       .limit(params.limit)
-      .lean()
+      .lean<Array<{ videoId: Types.ObjectId }>>()
       .exec();
-    const videoIds = relations.map((r) => r.videoId);
-    // v3 defense-in-depth: likes/saves can only be recorded on published
-    // reels going forward (FR-064), but this keeps historical/edge-case
-    // relations from ever surfacing a non-published reel.
-    const reels = await this.reelModel
-      .find({
-        _id: { $in: videoIds },
-        ...this.excludeFilter(params.excludeCreatorIds),
-        ...this.visibilityFilter(viewerId),
-      })
-      .exec();
-    const reelById = new Map<string, ReelDocument>(
-      reels.map((r) => [r._id.toString(), r as unknown as ReelDocument]),
+    const ordered = await this.reelsInOrder(
+      relations.map((r) => r.videoId),
+      viewerId,
+      params.excludeCreatorIds,
     );
-    // Preserve relation-recency order; drop any reel excluded by the block filter.
-    const ordered = videoIds
-      .map((id) => reelById.get(id.toString()))
-      .filter((r) => r !== undefined);
 
     const nextOffset = offset + params.limit;
     return {
@@ -933,19 +1019,40 @@ export class ReelsDbRepository implements ReelsRepository {
   }
 
   /**
-   * v6: [targetUserId]'s reposts, newest-repost-first (public tab). Rides the
-   * existing `reel_reposts` `{reposterId, createdAt}` index. Block + published
-   * visibility is filtered for [viewerId]; a reposted reel that has since left
-   * the published state (hidden/rejected/deleted) drops out via the standard
-   * `visibilityFilter`. Mirrors `listByRelation` but keys on `reposterId` and
-   * targets an arbitrary user rather than the caller.
+   * The reels behind a list of relations, in the relation order, dropping any the viewer may not
+   * see (excluded creator, or no longer published). Likes and saves can only be recorded on
+   * published reels, but this keeps historical or edge-case relations from surfacing a
+   * non-published reel.
+   */
+  private async reelsInOrder(
+    videoIds: Types.ObjectId[],
+    viewerId: string,
+    excludeCreatorIds: string[],
+  ): Promise<ReelLean[]> {
+    const reels = await this.reelModel
+      .find({
+        _id: { $in: videoIds },
+        ...this.excludeFilter(excludeCreatorIds),
+        ...this.visibilityFilter(viewerId),
+      })
+      .lean<ReelLean[]>()
+      .exec();
+    const byId = new Map(reels.map((r) => [r._id.toString(), r]));
+    return videoIds
+      .map((id) => byId.get(id.toString()))
+      .filter((reel): reel is ReelLean => reel !== undefined);
+  }
+
+  /**
+   * `targetUserId`'s reposts, newest-repost-first (the public tab). A reposted reel that has since
+   * left the published state drops out through the standard visibility filter.
    */
   async listReposted(
     viewerId: string,
     targetUserId: string,
     params: { cursor?: string; limit: number; excludeCreatorIds: string[] },
-  ): Promise<{ items: ReelDto[]; nextCursor: string | null }> {
-    const reposterId = this.toObjectId(targetUserId);
+  ): Promise<Page<ReelRecord>> {
+    const reposterId = toObjectId(targetUserId);
     if (!reposterId) return { items: [], nextCursor: null };
     const offset = this.parseCursor(params.cursor);
 
@@ -957,44 +1064,28 @@ export class ReelsDbRepository implements ReelsRepository {
       .sort({ createdAt: -1, _id: -1 })
       .skip(offset)
       .limit(params.limit)
-      .lean()
+      .lean<Array<{ videoId: Types.ObjectId }>>()
       .exec();
-    const videoIds = relations.map((r) => r.videoId);
-    const reels = await this.reelModel
-      .find({
-        _id: { $in: videoIds },
-        ...this.excludeFilter(params.excludeCreatorIds),
-        ...this.visibilityFilter(viewerId),
-      })
-      .exec();
-    const reelById = new Map<string, ReelDocument>(
-      reels.map((r) => [r._id.toString(), r as unknown as ReelDocument]),
+    const ordered = await this.reelsInOrder(
+      relations.map((r) => r.videoId),
+      viewerId,
+      params.excludeCreatorIds,
     );
-    // Preserve repost-recency order; drop any reel filtered out above.
-    const ordered = videoIds
-      .map((id) => reelById.get(id.toString()))
-      .filter((r): r is ReelDocument => r !== undefined);
-
     const items = await this.hydrate(ordered, viewerId);
 
-    // v6: every item here was reposted BY the target user (always the primary
-    // attribution / "[name] reposted"), but the badge also counts the OTHER
-    // viewer-relevant reposters (people the viewer follows, ∪ self) of the
-    // same video — so it matches the For You "N reposted" stack everywhere.
-    const ownerUser = await this.userModel
-      .findById(reposterId)
-      .select('username name avatarUrl')
-      .lean()
-      .exec();
-    const ownerReposter: RepostReposter = {
-      id: targetUserId,
-      username: ownerUser?.username ?? '',
-      name: ownerUser?.name ?? '',
-      avatarUrl: ownerUser?.avatarUrl ?? '',
-    };
+    // Every item here was reposted BY the target account, so it is always the primary
+    // attribution. The badge also counts the OTHER viewer-relevant reposters (followed accounts,
+    // plus the viewer) of the same video, so it matches the For You stack everywhere.
+    const [owner] = await this.accounts.findByIdsLean(
+      [targetUserId],
+      ['username', 'name', 'avatarUrl'],
+    );
+    const ownerReposter: RepostReposter = owner
+      ? summaryOf(owner)
+      : { id: targetUserId, username: '', name: '', avatarUrl: null };
     const relevant = await this.getRelevantRepostersForVideos(
       viewerId,
-      items.map((i) => i.id),
+      items.map((item) => item.id),
       params.excludeCreatorIds,
       targetUserId,
     );
@@ -1002,10 +1093,10 @@ export class ReelsDbRepository implements ReelsRepository {
       const others = (relevant.get(item.id) ?? []).filter(
         (r) => r.id !== targetUserId,
       );
-      const ordered2 = [ownerReposter, ...others];
+      const stack = [ownerReposter, ...others];
       item.repostedBy = ownerReposter;
-      item.repostersCount = ordered2.length;
-      item.topReposters = ordered2.slice(0, 3);
+      item.repostersCount = stack.length;
+      item.topReposters = stack.slice(0, 3);
     }
 
     const nextOffset = offset + params.limit;
@@ -1016,10 +1107,9 @@ export class ReelsDbRepository implements ReelsRepository {
   }
 
   /**
-   * v6: for a specific set of [videoIds], the reposters relevant to the viewer
-   * — people the viewer follows, ∪ the viewer, ∪ [alwaysIncludeUserId] — each
-   * video's list most-recent-first, reposter-edge block-filtered. Powers the
-   * multi-reposter badge stack on scoped surfaces (the profile Reposts list).
+   * For a set of videos, the reposters relevant to the viewer (accounts the viewer follows, the
+   * viewer, and `alwaysIncludeUserId`), each video's list most-recent-first and block-filtered.
+   * Powers the multi-reposter badge on scoped surfaces such as the profile Reposts list.
    */
   private async getRelevantRepostersForVideos(
     viewerId: string,
@@ -1027,26 +1117,22 @@ export class ReelsDbRepository implements ReelsRepository {
     excludeCreatorIds: string[],
     alwaysIncludeUserId?: string,
   ): Promise<Map<string, RepostReposter[]>> {
-    const viewerObjectId = this.toObjectId(viewerId);
-    const videoObjectIds = videoIds
-      .map((id) => this.toObjectId(id))
-      .filter((id): id is Types.ObjectId => id !== null);
+    const viewerObjectId = toObjectId(viewerId);
+    const videoObjectIds = toObjectIds(videoIds);
     if (!viewerObjectId || videoObjectIds.length === 0) return new Map();
 
     const follows = await this.followModel
       .find({ followerId: viewerObjectId })
-      .select('followeeId')
-      .lean()
+      .select({ followeeId: 1 })
+      .lean<Array<{ followeeId: Types.ObjectId }>>()
       .exec();
-    const relevantIds = [
+    const relevantIds = toObjectIds([
       ...new Set([
         ...follows.map((f) => f.followeeId.toString()),
         viewerId,
         ...(alwaysIncludeUserId ? [alwaysIncludeUserId] : []),
       ]),
-    ]
-      .map((id) => this.toObjectId(id))
-      .filter((id): id is Types.ObjectId => id !== null);
+    ]);
 
     const reposts = await this.repostModel
       .find({
@@ -1054,40 +1140,27 @@ export class ReelsDbRepository implements ReelsRepository {
         reposterId: { $in: relevantIds },
       })
       .sort({ createdAt: -1, _id: -1 })
-      .lean()
+      .lean<Array<{ videoId: Types.ObjectId; reposterId: Types.ObjectId }>>()
       .exec();
     if (reposts.length === 0) return new Map();
 
-    const neededUserIds = [
-      ...new Set(reposts.map((r) => r.reposterId.toString())),
-    ].map((id) => this.toObjectId(id));
-    const users = await this.userModel
-      .find({ _id: { $in: neededUserIds } })
-      .select('username name avatarUrl')
-      .lean()
-      .exec();
-    const userById = new Map(users.map((u) => [u._id.toString(), u]));
+    const accounts = await this.accounts.findByIdsLean(
+      [...new Set(reposts.map((r) => r.reposterId.toString()))],
+      ['username', 'name', 'avatarUrl'],
+    );
+    const accountById = new Map(accounts.map((a) => [a._id.toString(), a]));
     const excludeSet = new Set(excludeCreatorIds);
 
     const byVideo = new Map<string, RepostReposter[]>();
-    for (const r of reposts) {
-      const reposterId = r.reposterId.toString();
+    for (const repost of reposts) {
+      const reposterId = repost.reposterId.toString();
       if (excludeSet.has(reposterId)) continue;
-      const u = userById.get(reposterId);
-      if (!u) continue;
-      const videoId = r.videoId.toString();
+      const account = accountById.get(reposterId);
+      if (!account) continue;
+      const videoId = repost.videoId.toString();
       const list = byVideo.get(videoId);
-      const entry: RepostReposter = {
-        id: reposterId,
-        username: u.username ?? '',
-        name: u.name,
-        avatarUrl: u.avatarUrl ?? '',
-      };
-      if (list) {
-        list.push(entry);
-      } else {
-        byVideo.set(videoId, [entry]);
-      }
+      if (list) list.push(summaryOf(account));
+      else byVideo.set(videoId, [summaryOf(account)]);
     }
     return byVideo;
   }
@@ -1098,11 +1171,10 @@ export class ReelsDbRepository implements ReelsRepository {
     cursor?: string;
     limit: number;
     excludeCreatorIds: string[];
-  }): Promise<{ items: ReelDto[]; nextCursor: string | null }> {
+  }): Promise<Page<ReelRecord>> {
     const offset = this.parseCursor(params.cursor);
-    const escaped = params.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const filter: Record<string, unknown> = {
-      hashtags: { $regex: escaped, $options: 'i' },
+      hashtagsNormalized: { $regex: escapeRegex(params.q) },
       ...this.excludeFilter(params.excludeCreatorIds),
       ...this.visibilityFilter(params.viewerId),
     };
@@ -1113,6 +1185,7 @@ export class ReelsDbRepository implements ReelsRepository {
       .sort({ createdAt: -1, _id: -1 })
       .skip(offset)
       .limit(params.limit)
+      .lean<ReelLean[]>()
       .exec();
     const nextOffset = offset + params.limit;
     return {
@@ -1127,73 +1200,54 @@ export class ReelsDbRepository implements ReelsRepository {
     cursor?: string;
     limit: number;
     excludeUserIds: string[];
-  }): Promise<{ items: UserSearchResultDto[]; nextCursor: string | null }> {
+  }): Promise<Page<UserSearchResultDto>> {
     const offset = this.parseCursor(params.cursor);
-    const escaped = params.q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const excludeIds = [params.viewerId, ...params.excludeUserIds]
-      .map((id) => this.toObjectId(id))
-      .filter((id): id is Types.ObjectId => id !== null);
-    const filter = {
-      _id: { $nin: excludeIds },
-      $or: [
-        { username: { $regex: escaped, $options: 'i' } },
-        { name: { $regex: escaped, $options: 'i' } },
-      ],
-    };
-    const total = await this.userModel.countDocuments(filter).exec();
+    const { total, items } = await this.accounts.searchByNormalized({
+      normalizedQuery: params.q,
+      excludeIds: [params.viewerId, ...params.excludeUserIds],
+      skip: offset,
+      limit: params.limit,
+    });
     if (total === 0) return { items: [], nextCursor: null };
-    const docs = await this.userModel
-      .find(filter)
-      .sort({ name: 1, _id: 1 })
-      .skip(offset)
-      .limit(params.limit)
-      .lean()
-      .exec();
 
-    const viewerObjectId = this.toObjectId(params.viewerId);
+    const viewerObjectId = toObjectId(params.viewerId);
     const followed = viewerObjectId
       ? await this.followModel
           .find({
             followerId: viewerObjectId,
-            followeeId: { $in: docs.map((d) => d._id) },
+            followeeId: { $in: items.map((account) => account._id) },
           })
-          .lean()
+          .select({ followeeId: 1 })
+          .lean<Array<{ followeeId: Types.ObjectId }>>()
           .exec()
       : [];
     const followedSet = new Set(followed.map((f) => f.followeeId.toString()));
 
     const nextOffset = offset + params.limit;
     return {
-      items: docs.map((u) => ({
-        id: u._id.toString(),
-        username: u.username ?? '',
-        name: u.name,
-        avatarUrl: u.avatarUrl ?? '',
-        viewerFollowing: followedSet.has(u._id.toString()),
+      items: items.map((account) => ({
+        ...summaryOf(account),
+        viewerFollowing: followedSet.has(account._id.toString()),
       })),
       nextCursor: nextOffset < total ? String(nextOffset) : null,
     };
   }
 
   /**
-   * v5 (FR-084, R24): the caller's followees, most-recently-followed first —
-   * rides the existing `{followerId, createdAt}` index. Blocked followees
-   * are excluded defensively (a block does not delete the follow relation).
-   * Order comes from the `Follow` relation, not the `User` collection, so
-   * followees are hydrated then re-sorted to match the paged follow order.
+   * The caller's followees, most-recently-followed first, on the `{followerId, createdAt}` index.
+   * Excluded followees are dropped defensively (a block does not delete the follow relation).
+   * Order comes from the Follow relation, so followees are hydrated then re-sorted to match.
    */
   async getFollowingUsers(params: {
     viewerId: string;
     cursor?: string;
     limit: number;
     excludeUserIds: string[];
-  }): Promise<{ items: FollowedUserDto[]; nextCursor: string | null }> {
-    const viewerObjectId = this.toObjectId(params.viewerId);
+  }): Promise<Page<FollowedUserDto>> {
+    const viewerObjectId = toObjectId(params.viewerId);
     if (!viewerObjectId) return { items: [], nextCursor: null };
 
-    const excludeIds = params.excludeUserIds
-      .map((id) => this.toObjectId(id))
-      .filter((id): id is Types.ObjectId => id !== null);
+    const excludeIds = toObjectIds(params.excludeUserIds);
     const filter: Record<string, unknown> = {
       followerId: viewerObjectId,
       ...(excludeIds.length > 0 ? { followeeId: { $nin: excludeIds } } : {}),
@@ -1208,26 +1262,18 @@ export class ReelsDbRepository implements ReelsRepository {
       .sort({ createdAt: -1, _id: -1 })
       .skip(offset)
       .limit(params.limit)
-      .lean()
+      .lean<Array<{ followeeId: Types.ObjectId }>>()
       .exec();
-    const orderedFolloweeIds = follows.map((f) => f.followeeId.toString());
 
-    const users = await this.userModel
-      .find({ _id: { $in: follows.map((f) => f.followeeId) } })
-      .select('username name avatarUrl')
-      .lean()
-      .exec();
-    const userById = new Map(users.map((u) => [u._id.toString(), u]));
-
-    const items: FollowedUserDto[] = orderedFolloweeIds
-      .map((id) => userById.get(id))
-      .filter((u): u is NonNullable<typeof u> => u !== undefined)
-      .map((u) => ({
-        id: u._id.toString(),
-        username: u.username ?? '',
-        name: u.name,
-        avatarUrl: u.avatarUrl ?? '',
-      }));
+    const accounts = await this.accounts.findByIdsLean(
+      follows.map((f) => f.followeeId.toString()),
+      ['username', 'name', 'avatarUrl'],
+    );
+    const accountById = new Map(accounts.map((a) => [a._id.toString(), a]));
+    const items = follows
+      .map((f) => accountById.get(f.followeeId.toString()))
+      .filter((account): account is NonNullable<typeof account> => !!account)
+      .map(summaryOf);
 
     const nextOffset = offset + params.limit;
     return {
@@ -1237,9 +1283,8 @@ export class ReelsDbRepository implements ReelsRepository {
   }
 
   /**
-   * v6: everyone who reposted [reelId], most-recent-first — the reposters
-   * bottom sheet. The reel must be visible to the viewer (published, not
-   * blocked); reposters the viewer blocked are filtered out.
+   * Everyone who reposted `reelId`, most-recent-first. The reel must be visible to the viewer
+   * (published, or theirs); reposters the viewer blocked are filtered out.
    */
   async listReposters(
     reelId: string,
@@ -1249,21 +1294,18 @@ export class ReelsDbRepository implements ReelsRepository {
       limit: number;
       excludeUserIds: string[];
     },
-  ): Promise<{ items: FollowedUserDto[]; nextCursor: string | null } | null> {
-    const videoId = this.toObjectId(reelId);
+  ): Promise<Page<FollowedUserDto> | null> {
+    const videoId = toObjectId(reelId);
     if (!videoId) return null;
 
-    // Gate on the reel being visible to the viewer (published / owner).
     const reel = await this.reelModel
       .findOne({ _id: videoId, ...this.visibilityFilter(params.viewerId) })
-      .select('_id')
-      .lean()
+      .select({ _id: 1 })
+      .lean<{ _id: Types.ObjectId }>()
       .exec();
     if (!reel) return null;
 
-    const excludeIds = params.excludeUserIds
-      .map((id) => this.toObjectId(id))
-      .filter((id): id is Types.ObjectId => id !== null);
+    const excludeIds = toObjectIds(params.excludeUserIds);
     const filter: Record<string, unknown> = {
       videoId,
       ...(excludeIds.length > 0 ? { reposterId: { $nin: excludeIds } } : {}),
@@ -1278,26 +1320,18 @@ export class ReelsDbRepository implements ReelsRepository {
       .sort({ createdAt: -1, _id: -1 })
       .skip(offset)
       .limit(params.limit)
-      .lean()
+      .lean<Array<{ reposterId: Types.ObjectId }>>()
       .exec();
-    const orderedReposterIds = reposts.map((r) => r.reposterId.toString());
 
-    const users = await this.userModel
-      .find({ _id: { $in: reposts.map((r) => r.reposterId) } })
-      .select('username name avatarUrl')
-      .lean()
-      .exec();
-    const userById = new Map(users.map((u) => [u._id.toString(), u]));
-
-    const items: FollowedUserDto[] = orderedReposterIds
-      .map((id) => userById.get(id))
-      .filter((u): u is NonNullable<typeof u> => u !== undefined)
-      .map((u) => ({
-        id: u._id.toString(),
-        username: u.username ?? '',
-        name: u.name,
-        avatarUrl: u.avatarUrl ?? '',
-      }));
+    const accounts = await this.accounts.findByIdsLean(
+      reposts.map((r) => r.reposterId.toString()),
+      ['username', 'name', 'avatarUrl'],
+    );
+    const accountById = new Map(accounts.map((a) => [a._id.toString(), a]));
+    const items = reposts
+      .map((r) => accountById.get(r.reposterId.toString()))
+      .filter((account): account is NonNullable<typeof account> => !!account)
+      .map(summaryOf);
 
     const nextOffset = offset + params.limit;
     return {
@@ -1307,129 +1341,96 @@ export class ReelsDbRepository implements ReelsRepository {
   }
 
   /**
-   * v3 (FR-067, R19 cascade order): counter adjustment first, then relation
-   * docs, then reel-scoped notification events, then the reel doc itself,
-   * then media files (best-effort). Owner-only, any status. Sequential
-   * writes (no transactions — standalone Mongo, same posture as R9); the
-   * final guarded doc-delete makes retries safe.
+   * Cascade order: the creator's counter first, then the relation documents, then reel-scoped
+   * notification events, then the reel document itself. Owner-only, any status. Sequential
+   * writes, with no transactions: the final guarded delete makes a retry safe. Deleting the media
+   * is the caller's job: this method deletes data and nothing else.
    */
-  async deleteReel(
+  async deleteReelCascade(
     id: string,
     viewerId: string,
-  ): Promise<
-    | { deleted: true; videoUrl: string; thumbnailUrl: string }
-    | 'forbidden'
-    | null
-  > {
-    const videoId = this.toObjectId(id);
+  ): Promise<ReelDeletion | 'forbidden' | null> {
+    const videoId = toObjectId(id);
     if (!videoId) return null;
-    const reel = await this.reelModel.findById(videoId).exec();
+    const reel = await this.reelModel.findById(videoId).lean<ReelLean>().exec();
     if (!reel) return null;
     if (reel.creatorId.toString() !== viewerId) return 'forbidden';
 
     if (reel.likesCount > 0) {
-      await this.userModel
-        .updateOne(
-          { _id: reel.creatorId },
-          { $inc: { totalLikes: -reel.likesCount } },
-        )
-        .exec();
+      await this.accounts.incrementCounters(viewerId, {
+        totalLikes: -reel.likesCount,
+      });
     }
 
+    // Likes, saves, views, shares, comments, reposts and reports all go with the reel (FR-032).
     await Promise.all([
       this.likeModel.deleteMany({ videoId }).exec(),
       this.saveModel.deleteMany({ videoId }).exec(),
       this.viewModel.deleteMany({ videoId }).exec(),
+      this.guestViewModel.deleteMany({ videoId }).exec(),
       this.shareModel.deleteMany({ videoId }).exec(),
       this.commentModel.deleteMany({ videoId }).exec(),
+      this.repostModel.deleteMany({ videoId }).exec(),
+      this.reportModel.deleteMany({ videoId }).exec(),
     ]);
     await this.notificationEventModel.deleteMany({ reelId: videoId }).exec();
-
-    const { videoUrl, thumbnailUrl } = reel;
     await this.reelModel.deleteOne({ _id: videoId }).exec();
 
-    await Promise.all([
-      this.unlinkIfLocal(videoUrl),
-      this.unlinkIfLocal(thumbnailUrl),
-    ]);
-
-    return { deleted: true, videoUrl, thumbnailUrl };
+    return snapshotOf(reel);
   }
 
-  /**
-   * v4 (FR-069/FR-070): report a published reel. A duplicate (unique index
-   * on {videoId, reporterId}) is an idempotent no-op — no re-count, no
-   * re-check. A real insert `$inc`s `reportsCount`; crossing
-   * `REEL_REPORT_AUTOHIDE_THRESHOLD` fires a guarded `published -> hidden`
-   * transition (precondition also excludes `adminRestored: true` reels —
-   * "one auto-hide per reel ever", FR-070). The daily rate limit
-   * (`REEL_REPORT_DAILY_LIMIT`) uses a rolling 24h window, not calendar-day,
-   * to avoid timezone/midnight-reset ambiguity.
-   */
   async reportReel(
     id: string,
     viewerId: string,
     reason: ReelReportReasonValue,
     customReason: string | undefined,
-  ): Promise<
-    | { reported: true; alreadyReported: boolean }
-    | 'self'
-    | 'rate_limited'
-    | null
-  > {
-    const videoId = this.toObjectId(id);
-    const userId = this.toObjectId(viewerId);
+    autoHideThreshold: number,
+  ): Promise<'reported' | 'duplicate' | 'hidden' | 'self' | null> {
+    const videoId = toObjectId(id);
+    const userId = toObjectId(viewerId);
     if (!videoId || !userId) return null;
 
-    // v4 (FR-069): reports are accepted only against published reels —
-    // non-published reels follow the unknown-reel path (FR-061).
+    // Reports are accepted only against published reels: non-published reels follow the
+    // unknown-reel path.
     const reel = await this.reelModel
       .findOne({ _id: videoId, status: ReelStatus.PUBLISHED })
+      .select({ creatorId: 1 })
+      .lean<{ creatorId: Types.ObjectId }>()
       .exec();
     if (!reel) return null;
     if (reel.creatorId.equals(userId)) return 'self';
-
-    const dailyLimit =
-      this.configService.get<number>('REEL_REPORT_DAILY_LIMIT') ?? 20;
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const recentCount = await this.reportModel
-      .countDocuments({ reporterId: userId, createdAt: { $gte: since } })
-      .exec();
-    if (recentCount >= dailyLimit) return 'rate_limited';
 
     try {
       await this.reportModel.create({
         videoId,
         reporterId: userId,
-        reason,
-        // Only `other` carries a custom reason (data-model.md v4: "absent otherwise").
-        customReason:
-          reason === ReelReportReason.OTHER ? customReason : undefined,
+        reason: REPORT_REASONS[reason],
+        // Only `other` carries a custom reason.
+        customReason: reason === 'other' ? customReason : undefined,
       });
-    } catch {
-      // Duplicate-key race — another request already recorded this
-      // reporter's report for this reel; idempotent no-op (FR-069).
-      return { reported: true, alreadyReported: true };
+    } catch (error) {
+      // A duplicate-key race: this reporter's report is already recorded, so it is a no-op.
+      if (!isDuplicateKeyError(error)) throw error;
+      return 'duplicate';
     }
 
-    const threshold =
-      this.configService.get<number>('REEL_REPORT_AUTOHIDE_THRESHOLD') ?? 25;
     const updated = await this.reelModel
       .findOneAndUpdate(
         { _id: videoId },
         { $inc: { reportsCount: 1 } },
-        { returnDocument: 'after' },
+        { new: true },
       )
+      .select({ reportsCount: 1 })
+      .lean<{ reportsCount: number }>()
       .exec();
 
-    if (updated && updated.reportsCount >= threshold) {
-      // FR-070: guarded — precondition excludes reels already moved out of
-      // `published` (by this same threshold check racing another report, or
-      // by any other writer) and reels an admin has ever restored. Under a
-      // concurrent report crossing the threshold at the same instant, only
-      // one of these updates actually matches and flips the status; the
-      // other is a harmless no-op — exactly-once (SC-021).
-      await this.reelModel
+    if (updated && updated.reportsCount >= autoHideThreshold) {
+      // Guarded: the precondition excludes reels already moved out of `published` (by this same
+      // threshold check racing another report, or by any other writer) and reels an operator
+      // ever restored. Under concurrent reports crossing the threshold at the same instant, only
+      // one update actually matches and flips the status; the others are harmless no-ops. That is
+      // what makes the hide, and its side effects, fire exactly once.
+      const hidden = await this.reelModel
         .findOneAndUpdate(
           {
             _id: videoId,
@@ -1438,53 +1439,73 @@ export class ReelsDbRepository implements ReelsRepository {
           },
           { $set: { status: ReelStatus.HIDDEN } },
         )
+        .select({ _id: 1 })
+        .lean<{ _id: Types.ObjectId }>()
         .exec();
+      if (hidden) return 'hidden';
     }
-
-    return { reported: true, alreadyReported: false };
+    return 'reported';
   }
 
-  /** v4 (FR-071): admin review backlog — hidden reels, newest-hidden-first. */
+  async countRecentReelReports(
+    reporterId: string,
+    since: Date,
+  ): Promise<number> {
+    const userId = toObjectId(reporterId);
+    if (!userId) return 0;
+    return this.reportModel
+      .countDocuments({ reporterId: userId, createdAt: { $gte: since } })
+      .exec();
+  }
+
+  /** The operator review backlog: hidden reels, newest-hidden-first. */
   async listHiddenReels(params: {
     cursor?: string;
     limit: number;
-  }): Promise<{ items: AdminHiddenReelDto[]; nextCursor: string | null }> {
+  }): Promise<Page<AdminHiddenReelRecord>> {
     const offset = this.parseCursor(params.cursor);
     const filter = { status: ReelStatus.HIDDEN };
     const total = await this.reelModel.countDocuments(filter).exec();
     if (total === 0) return { items: [], nextCursor: null };
 
-    // `updatedAt` advances on the hide transition (timestamps: true), so
-    // sorting by it descending gives "most recently hidden first" — the
-    // same { status, updatedAt } index used by the R17 pending-sweep.
+    // `updatedAt` advances on the hide transition (timestamps: true), so sorting by it
+    // descending is "most recently hidden first", on the same `{status, updatedAt}` index the
+    // pending sweep uses.
     const docs = await this.reelModel
       .find(filter)
       .sort({ updatedAt: -1, _id: -1 })
       .skip(offset)
       .limit(params.limit)
+      .lean<ReelLean[]>()
       .exec();
 
     const reelIds = docs.map((d) => d._id);
-    const creatorIds = [...new Set(docs.map((d) => d.creatorId.toString()))];
     const [creators, reports] = await Promise.all([
-      this.userModel
-        .find({ _id: { $in: creatorIds.map((id) => new Types.ObjectId(id)) } })
-        .select('_id username')
-        .lean()
-        .exec(),
+      this.accounts.findByIdsLean(
+        [...new Set(docs.map((d) => d.creatorId.toString()))],
+        ['username'],
+      ),
       this.reportModel
         .find({ videoId: { $in: reelIds } })
         .sort({ createdAt: 1 })
-        .lean()
+        .lean<
+          Array<{
+            videoId: Types.ObjectId;
+            reporterId: Types.ObjectId;
+            reason: string;
+            customReason?: string;
+            createdAt?: Date;
+          }>
+        >()
         .exec(),
     ]);
     const creatorById = new Map(creators.map((c) => [c._id.toString(), c]));
     const reportsByVideo = new Map<string, typeof reports>();
-    for (const r of reports) {
-      const key = r.videoId.toString();
+    for (const report of reports) {
+      const key = report.videoId.toString();
       const existing = reportsByVideo.get(key);
-      if (existing) existing.push(r);
-      else reportsByVideo.set(key, [r]);
+      if (existing) existing.push(report);
+      else reportsByVideo.set(key, [report]);
     }
 
     const nextOffset = offset + params.limit;
@@ -1495,16 +1516,15 @@ export class ReelsDbRepository implements ReelsRepository {
           id: d.creatorId.toString(),
           username: creatorById.get(d.creatorId.toString())?.username ?? '',
         },
-        videoUrl: d.videoUrl,
-        thumbnailUrl: d.thumbnailUrl,
+        media: mediaOf(d),
         description: d.description,
-        hiddenAt: (d.updatedAt as Date).toISOString(),
+        hiddenAt: iso(d.updatedAt),
         reportsCount: d.reportsCount,
         reports: (reportsByVideo.get(d._id.toString()) ?? []).map((r) => ({
           reporterId: r.reporterId.toString(),
           reason: r.reason,
           customReason: r.customReason ?? null,
-          createdAt: (r.createdAt as Date).toISOString(),
+          createdAt: iso(r.createdAt),
         })),
       })),
       nextCursor: nextOffset < total ? String(nextOffset) : null,
@@ -1512,19 +1532,17 @@ export class ReelsDbRepository implements ReelsRepository {
   }
 
   /**
-   * v4 (FR-071): admin-only `hidden -> published|reject` transition.
-   * `restore` sets `adminRestored: true` — permanent auto-hide immunity
-   * (FR-070); `reportsCount` is left untouched (retained for audit).
+   * Operator-only `hidden -> published | rejected`. `restore` sets `adminRestored`: permanent
+   * auto-hide immunity. `reportsCount` is left untouched, kept for audit.
    */
   async adminModerateReel(
     id: string,
     action: 'restore' | 'reject',
-  ): Promise<{ id: string; status: string } | 'not_hidden' | null> {
-    const videoId = this.toObjectId(id);
+  ): Promise<ReelSnapshot | 'not_hidden' | null> {
+    const videoId = toObjectId(id);
     if (!videoId) return null;
-    const reel = await this.reelModel.findById(videoId).exec();
-    if (!reel) return null;
-    if (reel.status !== ReelStatus.HIDDEN) return 'not_hidden';
+    const exists = await this.reelModel.exists({ _id: videoId });
+    if (!exists) return null;
 
     const update =
       action === 'restore'
@@ -1533,66 +1551,184 @@ export class ReelsDbRepository implements ReelsRepository {
 
     const updated = await this.reelModel
       .findOneAndUpdate({ _id: videoId, status: ReelStatus.HIDDEN }, update, {
-        returnDocument: 'after',
+        new: true,
       })
+      .lean<ReelLean>()
       .exec();
-    // A concurrent admin action already decided it — never double-fire.
+    // Not hidden: already resolved, or a concurrent operator action decided it first. Never
+    // double-fire.
     if (!updated) return 'not_hidden';
-
-    return { id: updated._id.toString(), status: updated.status };
+    return snapshotOf(updated);
   }
 
   /**
-   * v4 (FR-073): explicit repost — always sets the relation. A duplicate
-   * insert (unique index) is caught and treated as already-reposted, same
-   * idempotency posture as the rest of this file's toggles.
+   * Explicit repost: always sets the relation. A duplicate insert (unique index) is caught and
+   * treated as already-reposted, the same idempotency as the rest of this file's toggles.
    */
   async repostReel(
     id: string,
     viewerId: string,
   ): Promise<{ reposted: true } | 'self' | null> {
-    const videoId = this.toObjectId(id);
-    const userId = this.toObjectId(viewerId);
+    const videoId = toObjectId(id);
+    const userId = toObjectId(viewerId);
     if (!videoId || !userId) return null;
-    // v4 (FR-073): reposting is only possible on published reels.
+    // Reposting is only possible on published reels.
     const reel = await this.reelModel
       .findOne({ _id: videoId, status: ReelStatus.PUBLISHED })
+      .select({ creatorId: 1 })
+      .lean<{ creatorId: Types.ObjectId }>()
       .exec();
     if (!reel) return null;
     if (reel.creatorId.equals(userId)) return 'self';
 
     try {
       await this.repostModel.create({ reposterId: userId, videoId });
-    } catch {
-      // Duplicate-key — already reposted; idempotent no-op.
+    } catch (error) {
+      // Already reposted: an idempotent no-op.
+      if (!isDuplicateKeyError(error)) throw error;
     }
     return { reposted: true };
   }
 
-  /** v4 (FR-073): explicit un-repost — idempotent no-op if none existed. */
   async unrepostReel(
     id: string,
     viewerId: string,
   ): Promise<{ reposted: false } | null> {
-    const videoId = this.toObjectId(id);
-    const userId = this.toObjectId(viewerId);
+    const videoId = toObjectId(id);
+    const userId = toObjectId(viewerId);
     if (!videoId || !userId) return null;
-    // Not tied to publication status — an owner can always remove their
-    // own repost even if the source reel later left `published`.
-    const reel = await this.reelModel.findById(videoId).exec();
-    if (!reel) return null;
+    // Not tied to publication status: an owner can always remove their own repost, even if the
+    // source reel later left `published`.
+    const exists = await this.reelModel.exists({ _id: videoId });
+    if (!exists) return null;
 
     await this.repostModel.deleteOne({ reposterId: userId, videoId }).exec();
     return { reposted: false };
   }
 
-  /** Only uploaded reels have locally-stored media (`/uploads/...`); seeded/CDN URLs are left alone. */
-  private async unlinkIfLocal(url: string): Promise<void> {
-    if (!url.startsWith('/uploads/')) return;
-    try {
-      await unlink(join(process.cwd(), url));
-    } catch {
-      // Best-effort (R19) — a missing file on disk must never block deletion.
-    }
+  // ── Screening support ───────────────────────────────────────────────────
+
+  private candidateOf(reel: ReelLean): ModerationCandidate {
+    return {
+      ...snapshotOf(reel),
+      description: reel.description,
+      mentions: reel.mentions.map((m) => ({
+        userId: m.userId.toString(),
+        username: m.username,
+      })),
+      createdAt: reel.createdAt ?? new Date(),
+    };
+  }
+
+  async getModerationCandidate(
+    id: string,
+  ): Promise<ModerationCandidate | null> {
+    const objectId = toObjectId(id);
+    if (!objectId) return null;
+    const reel = await this.reelModel
+      .findById(objectId)
+      .lean<ReelLean>()
+      .exec();
+    return reel ? this.candidateOf(reel) : null;
+  }
+
+  async publishPending(id: string): Promise<ModerationCandidate | null> {
+    const objectId = toObjectId(id);
+    if (!objectId) return null;
+    const updated = await this.reelModel
+      .findOneAndUpdate(
+        { _id: objectId, status: ReelStatus.PENDING_MODERATION },
+        { $set: { status: ReelStatus.PUBLISHED, publishedAt: new Date() } },
+        { new: true },
+      )
+      .lean<ReelLean>()
+      .exec();
+    return updated ? this.candidateOf(updated) : null;
+  }
+
+  async rejectPending(
+    id: string,
+    outcome: ModerationOutcome,
+  ): Promise<ModerationCandidate | null> {
+    const objectId = toObjectId(id);
+    if (!objectId) return null;
+    const updated = await this.reelModel
+      .findOneAndUpdate(
+        { _id: objectId, status: ReelStatus.PENDING_MODERATION },
+        {
+          $set: {
+            status: ReelStatus.REJECTED,
+            moderation: {
+              verdict: outcome.verdict,
+              flaggedSource: outcome.flaggedSource,
+              categories: outcome.categories ?? [],
+              providerRef: outcome.providerRef,
+              completedAt: new Date(),
+            },
+          },
+        },
+        { new: true },
+      )
+      .lean<ReelLean>()
+      .exec();
+    return updated ? this.candidateOf(updated) : null;
+  }
+
+  async findStalePendingIds(staleMs: number): Promise<string[]> {
+    const stale = await this.reelModel
+      .find({
+        status: ReelStatus.PENDING_MODERATION,
+        updatedAt: { $lt: new Date(Date.now() - staleMs) },
+      })
+      .select({ _id: 1 })
+      .lean<Array<{ _id: Types.ObjectId }>>()
+      .exec();
+    return stale.map((doc) => doc._id.toString());
+  }
+
+  // ── Lifecycle support ───────────────────────────────────────────────────
+
+  async getSnapshot(id: string): Promise<ReelSnapshot | null> {
+    const objectId = toObjectId(id);
+    if (!objectId) return null;
+    const reel = await this.reelModel
+      .findById(objectId)
+      .select({ creatorId: 1, status: 1, media: 1, hashtagsNormalized: 1 })
+      .lean<ReelLean>()
+      .exec();
+    return reel ? snapshotOf(reel) : null;
+  }
+
+  async setMediaLocation(
+    id: string,
+    location: 'private' | 'public',
+  ): Promise<void> {
+    const objectId = toObjectId(id);
+    if (!objectId) return;
+    await this.reelModel
+      .updateOne({ _id: objectId }, { $set: { 'media.location': location } })
+      .exec();
+  }
+
+  async listPublishedByCreator(
+    creatorId: string,
+    afterId: string | null,
+    limit: number,
+  ): Promise<ReelSnapshot[]> {
+    const creator = toObjectId(creatorId);
+    if (!creator) return [];
+    const after = afterId ? toObjectId(afterId) : null;
+    const reels = await this.reelModel
+      .find({
+        creatorId: creator,
+        status: ReelStatus.PUBLISHED,
+        ...(after ? { _id: { $gt: after } } : {}),
+      })
+      .sort({ _id: 1 })
+      .limit(limit)
+      .select({ creatorId: 1, status: 1, media: 1, hashtagsNormalized: 1 })
+      .lean<ReelLean[]>()
+      .exec();
+    return reels.map(snapshotOf);
   }
 }

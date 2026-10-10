@@ -82,7 +82,7 @@ description: "Task list for the China Parts Reels Service"
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete.
 
-- [ ] T009 Implement `src/app.module.ts`.
+- [X] T009 Implement `src/app.module.ts`.
   - **Configuration**: `ConfigModule.forRoot` with a Joi schema covering every variable in `.env.example`.
     - Every optional string uses `.optional().allow('')`, because of Ciro deploy gotcha 2 (quickstart.md §3).
     - `STORAGE_DRIVER` is `s3` or `local`. The `S3_*` variables are required when it is `s3`, using `Joi.when`.
@@ -92,7 +92,7 @@ description: "Task list for the China Parts Reels Service"
   - **Connections**: `MongooseModule.forRootAsync(MONGODB_URI)`, `BullModule.forRootAsync(REDIS_URL)`, `RedisModule` from `src/common/redis/redis.module.ts`, and `ThrottlerModule.forRootAsync` with `RedisThrottlerStorage` from `src/common/throttler/redis-throttler.storage.ts`. Do **not** register `ThrottlerGuard`. The custom guards in T026 use the storage directly.
   - **Worker role**: export `src/common/config/worker-role.ts` with `isWorkerRole(config)`. Feature modules use it to register queue processors only when the role is `worker` or `all`.
   - **Queues**: export `src/common/queues/queue-names.ts` with `ACCOUNTS_SYNC`, `ACCOUNTS_CLEANUP`, `MEDIA_VISIBILITY`, `REELS_MODERATION`, and `REELS_PUSH`.
-- [ ] T010 Implement `src/main.ts` with:
+- [X] T010 Implement `src/main.ts` with:
   - `helmet()`, plus CORS from the `CORS_ORIGINS` list, read through `ConfigService` and validated by T009's schema (constitution IV)
   - `express-mongo-sanitize` and `xss-clean`
   - a global `ValidationPipe` with `whitelist`, `forbidNonWhitelisted`, and `transform`, whose `exceptionFactory` throws `BadRequestException({ error: 'VALIDATION_FAILED', message: <field messages> })` (R25)
@@ -163,7 +163,7 @@ description: "Task list for the China Parts Reels Service"
   - **Side effects**: call `AccountsService.resolveOrProvision`. When standing changed, update `reels_accounts.standing` and `StandingService`.
   - **Result**: return `AuthenticatedUser`. Validation failures throw `UnauthorizedException({ error: 'AUTH_INVALID_SESSION' })`. `UPSTREAM_UNAVAILABLE` from the MySQL provider propagates unchanged and is never converted to 401.
   - **Tests**: `china-parts-token.strategy.spec.ts` covering an `id|secret` token, a pipeless token, a prefixed token, an expired token, a deleted row, an admin type, the customer/seller collision (SC-005), a cache hit, and MySQL down returning 503.
-- [ ] T025 Implement the access decorators and the identity guard in `src/common/guards/` per R10, step 2.
+- [X] T025 Implement the access decorators and the identity guard in `src/common/guards/` per R10, step 2.
   - **`access.decorator.ts`**: `@Access('public'|'optional'|'signed-in'|'seller'|'admin')`, `@StandingExempt()`, `@RateLimitClass('upload'|'write')`, and `@SkipRateLimit()`.
   - **`viewer-auth.guard.ts`**: reads the level, defaulting to `signed-in`.
     - With no `Authorization` header, the caller is a guest. With one, it runs the `chinaparts` strategy. Validation failures are `401 AUTH_INVALID_SESSION`, and `503 UPSTREAM_UNAVAILABLE` passes through unchanged.
@@ -180,19 +180,19 @@ description: "Task list for the China Parts Reels Service"
     - Routes marked `@RateLimitClass('write')` add `write:{userId}` with `WRITE_RATE_LIMIT_PER_MINUTE`.
   - **Tests**: `ip-throttler.guard.spec.ts` and `identity-throttler.guard.spec.ts`.
 - [X] T027 [P] Implement `src/common/guards/good-standing.guard.ts` per R10, step 4. For any non-GET request with `req.user`, it throws `403 ACCOUNT_NOT_IN_GOOD_STANDING` unless `standing === 'good'` or the route carries `@StandingExempt()`. Add `good-standing.guard.spec.ts`.
-- [ ] T028 Register the global guard chain in `src/app.module.ts` as `APP_GUARD` providers in exactly this order: `IpThrottlerGuard`, `ViewerAuthGuard`, `IdentityThrottlerGuard`, `GoodStandingGuard`. Add a comment explaining that the order is load-bearing (R10).
+- [X] T028 Register the global guard chain in `src/app.module.ts` as `APP_GUARD` providers in exactly this order: `IpThrottlerGuard`, `ViewerAuthGuard`, `IdentityThrottlerGuard`, `GoodStandingGuard`. Add a comment explaining that the order is load-bearing (R10).
 - [X] T029 Implement the `src/modules/health/` module and register it in `src/app.module.ts`.
   - **Routes**: `health.controller.ts` serves `GET /health/live` (always 200) and `GET /health/ready`, which pings MongoDB, Redis, and MySQL. Both sit outside `/api` and carry `@Access('public')` and `@SkipRateLimit()`.
   - **Envelope**: both return the standard envelope. A failed readiness check throws `ServiceUnavailableException({ error: 'NOT_READY', message })`, with `message` naming the failed dependencies (R26).
-- [ ] T030 Port identity across `src/modules/reels/`: replace every use of Ciro's `User` model with `ReelsAccount`.
+- [X] T030 Port identity across `src/modules/reels/`: replace every use of Ciro's `User` model with `ReelsAccount`.
   - **Files**: `reels.module.ts` (import `AccountsModule` instead of registering `User`), `reels.service.ts`, `reels-db.repository.ts`, `reels-moderation.service.ts`, `reels-notifications.service.ts`, `reels-text.util.ts`, `reels-seed.service.ts`, and every `schemas/*.ts` (`ref: 'User'` becomes `ref: 'ReelsAccount'`).
   - **Imports**: remove every import from `../users/`.
   - **Username search**: `searchUsers` matches `usernameNormalized` and `nameNormalized` instead of `username` and `name`.
-- [ ] T031 Port access in `src/modules/reels/reels.controller.ts`, `reels-users.controller.ts`, and `reels-admin.controller.ts`.
+- [X] T031 Port access in `src/modules/reels/reels.controller.ts`, `reels-users.controller.ts`, and `reels-admin.controller.ts`.
   - **Access**: remove every `JwtAuthGuard` and `AdminKeyGuard` use. Add `@Access('seller')` to EP8 and EP11, and a class-level `@Access('admin')` on the admin controller. Give every other route an explicit `@Access('signed-in')`, because T103 fails on any route that relies on the default. US1 later switches the guest routes to `optional`.
   - **Standing**: add `@StandingExempt()` to EP10 (delete own reel) and EP16 (view).
   - **Typing**: replace every `@Request() req: any` with `@CurrentUser() user: AuthenticatedUser`, passing `user.userId` where `req.user.userId` was used. Give every public method an explicit return type (constitution III).
-- [ ] T032 Port errors to sentinels in `src/modules/reels/**` per R25. Every ported `throw new XxxException('<text>')` becomes `throw new XxxException({ error: ErrorCode.X, message: '<text>' })`, keeping the text:
+- [X] T032 Port errors to sentinels in `src/modules/reels/**` per R25. Every ported `throw new XxxException('<text>')` becomes `throw new XxxException({ error: ErrorCode.X, message: '<text>' })`, keeping the text:
   - `Reel not found` → `REEL_NOT_FOUND`, and `User not found` → `ACCOUNT_NOT_FOUND`
   - `Cannot follow yourself` → `CANNOT_FOLLOW_SELF`, and `Cannot block yourself` → `CANNOT_BLOCK_SELF`
   - `Cannot report your own reel` → `CANNOT_REPORT_OWN_REEL`, and `Cannot repost your own reel` → `CANNOT_REPOST_OWN_REEL`
@@ -200,15 +200,15 @@ description: "Task list for the China Parts Reels Service"
   - `Invalid cursor` → `INVALID_CURSOR`
   - `A video file is required` → `VIDEO_REQUIRED`, `Unsupported file type` → `UNSUPPORTED_MEDIA_TYPE`, `Could not read the video duration` → `VIDEO_DURATION_UNREADABLE`, and the duration-limit error → `VIDEO_TOO_LONG`
   - the report-limit `HttpException` (429) → `REPORT_DAILY_LIMIT`
-- [ ] T033 Port notifications to a pluggable sender in `src/modules/push/`.
+- [X] T033 Port notifications to a pluggable sender in `src/modules/push/`.
   - **New**: create `src/modules/push/push-sender.ts` (a `PUSH_SENDER` token, a `PushSender` interface with `send(message: PushJob): Promise<void>`, and the `PushJob` type `{ recipientId, type, actorId?, reelId? }`). Also create `src/modules/push/noop-push.sender.ts`, which logs at debug, and `src/modules/push/push.module.ts`, which provides the no-op sender.
   - **Changed**: `src/modules/reels/reels-notifications.service.ts` keeps its event recording and dedup logic but replaces `PushService` and `DeviceTokensRepository` with an injected `PUSH_SENDER`.
   - **Done when**: T030 to T033 are complete and the reels module compiles. Until then, the controllers still import Ciro's `jwt-auth.guard` (removed in T031) and this service imports `../notifications/` (removed here).
-- [ ] T034 Port text parsing in `src/modules/reels/reels-text.util.ts` per R8 and FR-028.
+- [X] T034 Port text parsing in `src/modules/reels/reels-text.util.ts` per R8 and FR-028.
   - **Parsing**: use `HASHTAG_PATTERN` and `MENTION_PATTERN`. Return `hashtags` (display form, deduplicated by normalized value), `hashtagsNormalized`, and `mentions` resolved through `usernameNormalized $in`.
   - **Schema**: in `src/modules/reels/schemas/reel.schema.ts`, add `hashtagsNormalized: string[]`, and replace the `{hashtags, createdAt}` index with `{hashtagsNormalized: 1, createdAt: -1, _id: -1}`.
   - **Tests**: add `reels-text.util.spec.ts` covering Arabic tags, a tag split by diacritics, and mixed text.
-- [ ] T035 Port the media model in `src/modules/reels/media/` and `src/modules/reels/schemas/reel.schema.ts`.
+- [X] T035 Port the media model in `src/modules/reels/media/` and `src/modules/reels/schemas/reel.schema.ts`.
   - **Schema**: replace `videoUrl` and `thumbnailUrl` with `media: { videoKey, thumbnailKey, location: 'private'|'public' }` (data-model.md).
   - **`src/modules/reels/media/media-url.service.ts`**: `urlsFor(reel, viewerId?)`. When `media.location` is `public`, it returns `StorageService.publicUrl`. For the owner otherwise, it returns `presignGet` with a 900 s TTL. Anyone else gets `null`.
   - **`src/modules/reels/media/reel-media.service.ts`**: depends only on `StorageService`, and never writes to MongoDB.
@@ -217,11 +217,11 @@ description: "Task list for the China Parts Reels Service"
     - `deleteAll(media)` deletes both buckets' copies.
     - Each method is idempotent.
   - **Tests**: add specs for both services.
-- [ ] T036 Create `src/modules/reels/presentation/reel-presenter.service.ts` per R22.
+- [X] T036 Create `src/modules/reels/presentation/reel-presenter.service.ts` per R22.
   - **`present(items, viewer)`**: fills `videoUrl` and `thumbnailUrl` through `MediaUrlService`, once per page.
   - **Refactor**: remove URL building from `hydrate()` in `src/modules/reels/reels-db.repository.ts`, which now returns `media` and `productLinks` untouched. Route every `ReelsService` method that returns reels or pages through the presenter.
   - **Tests**: add `reel-presenter.service.spec.ts`.
-- [ ] T037 Create `src/modules/reels/lifecycle/reel-lifecycle.service.ts`, the single place for status and standing side effects (data-model.md "Reel status", R12, R22).
+- [X] T037 Create `src/modules/reels/lifecycle/reel-lifecycle.service.ts`, the single place for status and standing side effects (data-model.md "Reel status", R12, R22).
   - **Dependencies**: `ReelsDbRepository`, `ReelMediaService`, and `StandingService`. `HashtagStatsService` is added in US6.
   - **`syncMediaVisibility(reel)`**:
     - Compute `public = status === 'published' && !StandingService.isExcluded(creatorId)`.
@@ -235,11 +235,11 @@ description: "Task list for the China Parts Reels Service"
     - `ReelsService` and `reels-moderation.service.ts` call the lifecycle hooks after the guarded update succeeds.
   - **Rule**: `reels-db.repository.ts` imports no service.
   - **Tests**: add `reel-lifecycle.service.spec.ts`, covering a published reel whose creator is excluded staying private.
-- [ ] T038 Rewrite `src/modules/reels/reels-seed.service.ts` as a development-only seeder.
+- [X] T038 Rewrite `src/modules/reels/reels-seed.service.ts` as a development-only seeder.
   - **Gating**: register it only when `SEED_DEMO_CONTENT=true`, and throw at boot if `NODE_ENV=production` (FR-071).
   - **Accounts**: provision `reels_accounts` for `SEED_SELLER_EXTERNAL_IDS` and `SEED_CUSTOMER_EXTERNAL_IDS` through `ChinaPartsAccountsRepository` and `AccountsService.resolveOrProvision`, skipping ids China Parts doesn't have.
   - **Content**: upload `assets/seed/sample-10s.mp4` through `StorageService` into the private bucket. Create 12 published reels for the first seeded seller with Arabic and English hashtags, then call `ReelLifecycleService.syncMediaVisibility` on each.
-- [ ] T039 Port the Ciro unit specs so they pass: `src/modules/reels/reels.service.spec.ts`, `reels-moderation.service.spec.ts`, `reels-notifications.service.spec.ts`, `reels-redirect.controller.spec.ts`, and `moderation/stub.provider.spec.ts`. Swap the mocks to `ReelsAccount`, `PUSH_SENDER`, `ReelLifecycleService`, `ReelPresenter`, and `media`, and assert sentinels instead of messages. `npm test` must be green.
+- [X] T039 Port the Ciro unit specs so they pass: `src/modules/reels/reels.service.spec.ts`, `reels-moderation.service.spec.ts`, `reels-notifications.service.spec.ts`, `reels-redirect.controller.spec.ts`, and `moderation/stub.provider.spec.ts`. Swap the mocks to `ReelsAccount`, `PUSH_SENDER`, `ReelLifecycleService`, `ReelPresenter`, and `media`, and assert sentinels instead of messages. `npm test` must be green.
 - [ ] T040 Create the end-to-end harness in `test/utils/`.
   - **`test/utils/app.ts`**: `createTestApp(env?)` boots the full `AppModule` against `test/utils/containers.ts`, an in-memory MongoDB replica set, the local storage driver, the `stub` moderation provider, and `WORKER_ROLE=all`, with optional env overrides.
   - **`test/utils/tokens.ts`**: `issueToken(type, externalId)` inserts a Sanctum row as root and returns `` `Bearer ${id}|${secret}` `` (quickstart.md §4).

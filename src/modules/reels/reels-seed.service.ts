@@ -1,270 +1,166 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
-import { User, UserDocument } from '../users/schemas/user.schema';
-import { Reel, ReelDocument, ReelStatus } from './schemas/reel.schema';
-import { ReelLike, ReelLikeDocument } from './schemas/reel-like.schema';
-import { ReelShare, ReelShareDocument } from './schemas/reel-share.schema';
-import {
-  ReelComment,
-  ReelCommentDocument,
-} from './schemas/reel-comment.schema';
-import { Follow, FollowDocument } from './schemas/follow.schema';
+import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Types } from 'mongoose';
+import { copyFile, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { isWorkerRole } from '../../common/config/worker-role';
+import { StorageService } from '../../common/storage/storage.service';
+import { AccountsService } from '../accounts/accounts.service';
+import { ChinaPartsAccountsRepository } from '../china-parts/chinaparts-accounts.repository';
+import { ReelLifecycleService } from './lifecycle/reel-lifecycle.service';
+import { generateThumbnail } from './media/video.util';
 import { parseHashtagsAndMentions } from './reels-text.util';
+import { REELS_REPOSITORY } from './reels.repository';
+import type { ReelsRepository } from './reels.repository';
 
 /**
- * Idempotent demo-content seed for the Reels feature (FR-033, clarified:
- * real database this phase, seeded with demo content). Runs once at boot,
- * guarded by a document-count check so restarts never duplicate data.
+ * Demo content for development, staging and test environments ONLY (FR-071). It never runs unless
+ * `SEED_DEMO_CONTENT=true`, and it refuses to boot at all when `NODE_ENV=production`: a production
+ * database must never get demo reels, so this is checked here and again by the Joi schema.
  *
- * Public sample video/image URLs only (curl-verified, per the v1 mock seed
- * this replaces — see the note that used to live in mock/reels-seed.ts).
+ * Accounts come from China Parts, not from this file: the ids in `SEED_SELLER_EXTERNAL_IDS` and
+ * `SEED_CUSTOMER_EXTERNAL_IDS` are provisioned through the normal path, and ids China Parts does
+ * not know are skipped. The reels go through the real lifecycle (store privately, publish, make
+ * public), so a seeded environment exercises the same code as a real upload.
+ *
+ * Idempotent: if the first seeded seller already has reels, nothing is added.
  */
-const SAMPLE_VIDEO_URLS = [
-  'https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4',
-  'https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_2MB.mp4',
-  'https://test-videos.co.uk/vids/sintel/mp4/h264/360/Sintel_360_10s_1MB.mp4',
-  'https://test-videos.co.uk/vids/sintel/mp4/h264/360/Sintel_360_10s_2MB.mp4',
-  'https://test-videos.co.uk/vids/jellyfish/mp4/h264/360/Jellyfish_360_10s_1MB.mp4',
-  'https://test-videos.co.uk/vids/jellyfish/mp4/h264/360/Jellyfish_360_10s_2MB.mp4',
-  'https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4',
-];
+const SEED_VIDEO = join(process.cwd(), 'assets', 'seed', 'sample-10s.mp4');
 
-const CREATORS = [
-  { name: 'Lina K', username: 'lina.k', bio: 'Filmmaker. Cairo → Berlin.' },
-  { name: 'Omar R', username: 'omar', bio: 'Home cook & content creator.' },
-  {
-    name: 'Sara M',
-    username: 'sara.m',
-    bio: 'Travel diaries, one reel at a time.',
-  },
-  {
-    name: 'Yusuf A',
-    username: 'yusuf.a',
-    bio: 'Car enthusiast. Weekend racer.',
-  },
-  { name: 'Nour E', username: 'nour.e', bio: 'Music producer & DJ.' },
-  { name: 'Karim S', username: 'karim.s', bio: 'Comedy sketches, no script.' },
-  { name: 'Dina H', username: 'dina.h', bio: 'Fitness coach, 5am club.' },
-  {
-    name: 'Tarek B',
-    username: 'tarek.b',
-    bio: 'Street photography & short films.',
-  },
+const DESCRIPTIONS = [
+  'فلتر زيت أصلي لكامري #فلتر_زيت #كامري_٢٠١٨',
+  'Genuine brake pads for Hyundai Elantra #BrakePads #Hyundai',
+  'تفاصيل بطارية سيارة جديدة #بطارية #قطع_غيار',
+  'Spark plugs: how to check the gap #SparkPlug #DIY',
+  'إطارات شتوية بأسعار مميزة #إطارات #عروض',
+  'Air filter replacement in two minutes #AirFilter #Maintenance',
+  'زيوت المحركات الأكثر مبيعاً #زيت_محرك #Mobil1',
+  'Headlight restoration before and after #Headlights #Detailing',
+  'ممتص صدمات أمامي لتويوتا #ممتص_صدمات #تويوتا',
+  'Radiator hose that fits most sedans #Radiator #Cooling',
+  'شاحن بطارية ذكي للسيارات #شاحن #بطارية',
+  'Wiper blades that last all winter #Wipers #Visibility',
 ];
-
-const HASHTAG_POOL = [
-  'travel',
-  'cairo',
-  'foodie',
-  'cars',
-  'music',
-  'comedy',
-  'fitness',
-  'photography',
-];
-
-function daysAgo(days: number): Date {
-  return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-}
 
 @Injectable()
 export class ReelsSeedService implements OnModuleInit {
   private readonly logger = new Logger(ReelsSeedService.name);
 
   constructor(
-    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
-    @InjectModel(Reel.name) private readonly reelModel: Model<ReelDocument>,
-    @InjectModel(ReelLike.name)
-    private readonly likeModel: Model<ReelLikeDocument>,
-    @InjectModel(ReelShare.name)
-    private readonly shareModel: Model<ReelShareDocument>,
-    @InjectModel(ReelComment.name)
-    private readonly commentModel: Model<ReelCommentDocument>,
-    @InjectModel(Follow.name)
-    private readonly followModel: Model<FollowDocument>,
+    private readonly config: ConfigService,
+    private readonly chinaParts: ChinaPartsAccountsRepository,
+    private readonly accounts: AccountsService,
+    private readonly storage: StorageService,
+    private readonly lifecycle: ReelLifecycleService,
+    @Inject(REELS_REPOSITORY) private readonly reels: ReelsRepository,
   ) {}
 
   async onModuleInit(): Promise<void> {
-    await this.backfillUsernames();
-    await this.backfillStatus();
-
-    const existingReels = await this.reelModel.countDocuments().exec();
-    if (existingReels > 0) {
-      this.logger.log('Reels already seeded — skipping demo content seed');
-      return;
+    if (this.config.get<boolean>('SEED_DEMO_CONTENT') !== true) return;
+    if (this.config.get<string>('NODE_ENV') === 'production') {
+      throw new Error('SEED_DEMO_CONTENT must never be enabled in production');
     }
-    await this.seed();
-  }
+    // One process seeds, so an API instance and a worker instance never both do.
+    if (!isWorkerRole(this.config)) return;
 
-  /**
-   * v3 (FR-061): reels created before the moderation pipeline shipped have
-   * no `status` field. They were vetted at seed time (or are pre-existing
-   * production content), so they backfill straight to `published` — never
-   * silently drop out of every feed/profile/search surface. Idempotent:
-   * a no-op on repeat boots once every doc has a status.
-   */
-  private async backfillStatus(): Promise<void> {
-    const result = await this.reelModel
-      .updateMany(
-        { status: { $exists: false } },
-        { $set: { status: ReelStatus.PUBLISHED, publishedAt: new Date() } },
-      )
-      .exec();
-    if (result.modifiedCount > 0) {
-      this.logger.log(
-        `Backfilled status=published for ${result.modifiedCount} pre-v3 reel(s)`,
-      );
-    }
-  }
-
-  /** Real (non-seeded) users predate `username` — backfill so they can be @mentioned/searched. */
-  private async backfillUsernames(): Promise<void> {
-    const usernameless = await this.userModel
-      .find({ username: { $exists: false } })
-      .select('_id name')
-      .exec();
-    for (const user of usernameless) {
-      const base =
-        user.name
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '.')
-          .replace(/^\.+|\.+$/g, '') || 'user';
-      let candidate = base;
-      let suffix = 1;
-
-      while (await this.userModel.exists({ username: candidate })) {
-        candidate = `${base}${suffix++}`;
-      }
-      user.username = candidate;
-
-      await user.save();
-    }
-    if (usernameless.length > 0) {
-      this.logger.log(
-        `Backfilled username for ${usernameless.length} existing user(s)`,
-      );
+    try {
+      await this.seed();
+    } catch (error) {
+      // A seed problem (China Parts unreachable, storage down) must not stop the service booting.
+      this.logger.error(`Demo seed failed: ${String(error)}`);
     }
   }
 
   private async seed(): Promise<void> {
-    this.logger.log('Seeding Reels demo content into MongoDB...');
+    const sellerIds = this.ids('SEED_SELLER_EXTERNAL_IDS');
+    const customerIds = this.ids('SEED_CUSTOMER_EXTERNAL_IDS');
 
-    const creators = await Promise.all(
-      CREATORS.map(async (c, i) => {
-        const existing = await this.userModel
-          .findOne({ username: c.username })
-          .exec();
-        if (existing) return existing;
-        return this.userModel.create({
-          name: c.name,
-          username: c.username,
-          phoneNumber: `+100000000${i}`,
-          bio: c.bio,
-          avatarUrl: `https://picsum.photos/seed/reels-avatar-${i + 1}/200/200`,
-          isPhoneVerified: true,
-        });
-      }),
+    const [sellers, customers] = await Promise.all([
+      this.chinaParts.getSellers(sellerIds),
+      this.chinaParts.getCustomers(customerIds),
+    ]);
+    const provisioned = [];
+    for (const account of [...sellers, ...customers]) {
+      provisioned.push(await this.accounts.resolveOrProvision(account));
+    }
+    const creator = provisioned.find(
+      (account) => account.accountType === 'seller',
     );
-
-    const videoCount = 40;
-    const reelDocs: ReelDocument[] = [];
-    for (let i = 0; i < videoCount; i++) {
-      const creator = creators[i % creators.length];
-      const mentionTarget = creators[(i + 1) % creators.length];
-      const tag1 = HASHTAG_POOL[i % HASHTAG_POOL.length];
-      const tag2 = HASHTAG_POOL[(i + 3) % HASHTAG_POOL.length];
-      const description = `Reel #${i + 1} moments #${tag1} #${tag2} feat. @${mentionTarget.username}`;
-
-      const { hashtags, mentions } = await parseHashtagsAndMentions(
-        description,
-        this.userModel,
+    if (!creator) {
+      this.logger.warn(
+        'No seed seller exists in China Parts, so no reels were seeded',
       );
-
-      const seededAt = daysAgo(videoCount - i);
-      const reel = await this.reelModel.create({
-        creatorId: creator._id,
-        videoUrl: SAMPLE_VIDEO_URLS[i % SAMPLE_VIDEO_URLS.length],
-        thumbnailUrl: `https://picsum.photos/seed/reels-thumb-${i + 1}/400/700`,
-        description,
-        hashtags,
-        mentions: mentions.map((m) => ({
-          userId: new Types.ObjectId(m.userId),
-          username: m.username,
-        })),
-        // v3 (FR-061): demo catalog is vetted at seed time — enters
-        // directly as published, never through the moderation pipeline.
-        status: ReelStatus.PUBLISHED,
-        publishedAt: seededAt,
-        createdAt: seededAt,
-      });
-      reelDocs.push(reel);
+      return;
     }
 
-    // Seeded likes/comments/shares/follows so counts aren't all zero —
-    // counters kept consistent with the relation rows written (FR-055).
-    for (let i = 0; i < reelDocs.length; i++) {
-      const reel = reelDocs[i];
-      const likerCount = (i % 5) + 1;
-      for (let l = 0; l < likerCount; l++) {
-        const liker = creators[(i + l + 1) % creators.length];
-
-        await this.likeModel.create({ userId: liker._id, videoId: reel._id });
-
-        await this.userModel
-          .updateOne({ _id: reel.creatorId }, { $inc: { totalLikes: 1 } })
-          .exec();
-      }
-      reel.likesCount = likerCount;
-
-      if (i % 3 === 0) {
-        const author = creators[(i + 2) % creators.length];
-
-        await this.commentModel.create({
-          videoId: reel._id,
-          authorId: author._id,
-          text: 'This is amazing 🔥',
-          createdAt: daysAgo(videoCount - i - 1),
-        });
-        reel.commentsCount = 1;
-      }
-
-      if (i % 4 === 0) {
-        const sharer = creators[(i + 3) % creators.length];
-
-        await this.shareModel.create({
-          userId: sharer._id,
-          videoId: reel._id,
-          createdAt: daysAgo(videoCount - i - 1),
-        });
-        reel.sharesCount = 1;
-      }
-
-      reel.viewsCount = (i % 7) * 37;
-
-      await reel.save();
+    const creatorId = creator._id.toString();
+    if (
+      (await this.reels.listPublishedByCreator(creatorId, null, 1)).length > 0
+    ) {
+      this.logger.log('Demo reels already seeded, skipping');
+      return;
     }
 
-    for (let i = 0; i < creators.length; i++) {
-      const follower = creators[i];
-      const followee = creators[(i + 1) % creators.length];
-
-      await this.followModel.create({
-        followerId: follower._id,
-        followeeId: followee._id,
-      });
-
-      await this.userModel
-        .updateOne({ _id: followee._id }, { $inc: { followersCount: 1 } })
-        .exec();
-
-      await this.userModel
-        .updateOne({ _id: follower._id }, { $inc: { followingCount: 1 } })
-        .exec();
+    // The bundled asset is read-only in the image, so work on a copy in a temp directory.
+    const workDir = await mkdtemp(join(tmpdir(), 'reels-seed-'));
+    try {
+      const video = join(workDir, 'seed.mp4');
+      await copyFile(SEED_VIDEO, video);
+      const thumbnail = await generateThumbnail(video);
+      for (const description of DESCRIPTIONS) {
+        await this.seedReel(creatorId, description, video, thumbnail);
+      }
+    } finally {
+      await rm(workDir, { recursive: true, force: true });
     }
-
     this.logger.log(
-      `Seeded ${creators.length} creators and ${reelDocs.length} reels`,
+      `Seeded ${DESCRIPTIONS.length} demo reels for seller ${creator.username}`,
     );
+  }
+
+  private async seedReel(
+    creatorId: string,
+    description: string,
+    videoPath: string,
+    thumbnailPath: string,
+  ): Promise<void> {
+    const id = new Types.ObjectId().toString();
+    const videoKey = `reels/${id}/video.mp4`;
+    const thumbnailKey = `reels/${id}/thumb.jpg`;
+    const bucket = this.storage.privateBucket;
+
+    await this.storage.putFile(bucket, videoKey, videoPath, 'video/mp4');
+    await this.storage.putFile(
+      bucket,
+      thumbnailKey,
+      thumbnailPath,
+      'image/jpeg',
+    );
+
+    // No mentions are resolved: a seed must never send mention notifications.
+    const parsed = await parseHashtagsAndMentions(description, () =>
+      Promise.resolve([]),
+    );
+    await this.reels.createReel({
+      id,
+      creatorId,
+      videoKey,
+      thumbnailKey,
+      description,
+      hashtags: parsed.hashtags,
+      hashtagsNormalized: parsed.hashtagsNormalized,
+      mentions: [],
+    });
+
+    const published = await this.reels.publishPending(id);
+    if (published) await this.lifecycle.onPublished(published);
+  }
+
+  private ids(key: string): number[] {
+    return (this.config.get<string>(key) ?? '')
+      .split(',')
+      .map((part) => Number(part.trim()))
+      .filter((value) => Number.isInteger(value) && value > 0);
   }
 }

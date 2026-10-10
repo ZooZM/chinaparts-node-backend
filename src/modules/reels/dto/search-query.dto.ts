@@ -1,15 +1,7 @@
-import {
-  IsInt,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  Max,
-  Min,
-} from 'class-validator';
+import { IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 
-// FR-057: whitespace-only queries are rejected (client no-ops before sending;
-// this is the server-side guard).
+// A whitespace-only query is refused (FR-050): this is the server-side guard.
 export class SearchQueryDto {
   @Transform(({ value }: { value: unknown }) =>
     typeof value === 'string' ? value.trim() : value,
@@ -26,6 +18,5 @@ export class SearchQueryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  @Max(25)
-  limit?: number = 10;
+  limit?: number;
 }

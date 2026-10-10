@@ -3,9 +3,12 @@ import { Document, Types } from 'mongoose';
 
 export type ReelLikeDocument = ReelLike & Document;
 
-@Schema({ timestamps: { createdAt: true, updatedAt: false } })
+@Schema({
+  collection: 'reel_likes',
+  timestamps: { createdAt: true, updatedAt: false },
+})
 export class ReelLike {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'ReelsAccount', required: true })
   userId: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, ref: 'Reel', required: true })

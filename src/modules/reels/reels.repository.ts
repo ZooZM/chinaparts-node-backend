@@ -1,144 +1,139 @@
 /**
- * Abstract data-access contract for the Reels feature (specs/021-reels-video-feed).
+ * Abstract data-access contract for the reels feature, bound to `ReelsDbRepository` in
+ * `reels.module.ts`.
  *
- * v2: bound to `ReelsDbRepository` (Mongoose) in `reels.module.ts` — the
- * mock store has been retired (FR-032/FR-033, clarified: real database this
- * phase). The shape here is unchanged in spirit from v1 so `ReelsService`
- * and the controllers did not need to change their calling conventions.
+ * Two rules shape every signature here (research R22):
+ * - A repository only reads and writes data. It never calls a service, never builds a media URL,
+ *   and never triggers a side effect. Operations that can change a reel's status return the
+ *   outcome, and `ReelsService` runs the side effects through `ReelLifecycleService`.
+ * - Reels leave the repository as `ReelRecord`s carrying media *keys*. `ReelPresenter` turns them
+ *   into `ReelDto`s with URLs, because a URL depends on who is asking and on the creator's standing.
  */
+import type { AccountType } from '../../common/http/viewer-request';
 
-export interface ReelCreatorRecord {
-  id: string;
-  name: string;
-  username: string;
-  avatarUrl: string;
-  bio: string;
-}
+// ── Plain shapes ────────────────────────────────────────────────────────────────────────────
+
+export type ReelStatusValue =
+  'pending_moderation' | 'published' | 'rejected' | 'hidden';
 
 export interface ReelMentionRecord {
   userId: string;
   username: string;
 }
 
-export interface ReelVideoRecord {
+/** Object keys of a reel's files, and which bucket they currently sit in. */
+export interface ReelMediaRecord {
+  videoKey: string;
+  thumbnailKey: string;
+  location: 'private' | 'public';
+}
+
+/** An account as shown next to a reel, a comment, or in a list. `avatarUrl: null` is a placeholder. */
+export interface AccountSummary {
   id: string;
-  creatorId: string;
-  videoUrl: string;
-  thumbnailUrl: string;
+  username: string;
+  name: string;
+  avatarUrl: string | null;
+}
+
+export interface Page<T> {
+  items: T[];
+  /** Opaque. `null` means the end of the list (the For You feed never ends). */
+  nextCursor: string | null;
+}
+
+// ── Reels ───────────────────────────────────────────────────────────────────────────────────
+
+export interface ReelRecord {
+  id: string;
+  media: ReelMediaRecord;
+  createdAt: string;
   description: string;
   hashtags: string[];
   mentions: ReelMentionRecord[];
-  createdAt: string;
-}
-
-export interface ReelCommentRecord {
-  id: string;
-  videoId: string;
-  authorId: string;
-  text: string;
-  createdAt: string;
-}
-
-export interface ReelDto {
-  id: string;
-  videoUrl: string;
-  thumbnailUrl: string;
-  createdAt: string;
-  description: string;
-  hashtags: string[];
-  mentions: ReelMentionRecord[];
-  creator: {
-    id: string;
-    name: string;
-    username: string;
-    avatarUrl: string;
+  creator: AccountSummary & {
+    accountType: AccountType;
     viewerFollowing: boolean;
   };
-  // v3 (FR-061): always present. Non-owners only ever receive `published`
-  // (every other status 404s or is filtered out before reaching a DTO).
-  status: 'pending_moderation' | 'published' | 'rejected' | 'hidden';
+  // Always present. Non-owners only ever receive `published`: every other status 404s or is
+  // filtered out before reaching a record.
+  status: ReelStatusValue;
   viewsCount: number;
   likesCount: number;
   commentsCount: number;
   sharesCount: number;
   viewerLiked: boolean;
   viewerSaved: boolean;
-  // v4 (FR-076): non-null only on For You repost-injected items (and v6
-  // profile Reposts-list items). The primary/most-recent relevant reposter.
-  repostedBy: {
-    id: string;
-    username: string;
-    name: string;
-    avatarUrl: string;
-  } | null;
-  // v6: viewer-relevant reposters (people the viewer follows, ∪ the viewer),
-  // driving the multi-reposter badge — `repostersCount` is the total of that
-  // relevant set, `topReposters` are up to 3 of them (most-recent-first) for
-  // the stacked-avatar display. Both 0/[] on surfaces without repost context.
+  // Non-null only on For You repost-injected items and on Reposts-list items: the most recent
+  // relevant reposter.
+  repostedBy: AccountSummary | null;
+  // Viewer-relative (FR-060): the reposters the viewer follows, plus the viewer. `repostersCount`
+  // is never a total, and both are 0 and [] for signed-out visitors and where there is no repost
+  // context.
   repostersCount: number;
-  topReposters: {
-    id: string;
-    username: string;
-    name: string;
-    avatarUrl: string;
-  }[];
-  // v4 (FR-073): drives the action-column Repost button's active state —
-  // true whenever the CALLER (not just any followee) has reposted this reel.
+  topReposters: AccountSummary[];
+  // True whenever the caller (not just a followee) has reposted this reel.
   viewerReposted: boolean;
 }
+
+/** The response shape: a record with its keys turned into URLs for this viewer. */
+export interface ReelDto extends Omit<ReelRecord, 'media'> {
+  videoUrl: string;
+  thumbnailUrl: string;
+}
+
+/** Everything a status or standing side effect needs to know about a reel. */
+export interface ReelSnapshot {
+  id: string;
+  creatorId: string;
+  status: ReelStatusValue;
+  media: ReelMediaRecord;
+  hashtagsNormalized: string[];
+}
+
+// ── Comments ────────────────────────────────────────────────────────────────────────────────
 
 export interface CommentDto {
   id: string;
   authorId: string;
   authorName: string;
-  authorAvatarUrl: string;
+  authorAvatarUrl: string | null;
   text: string;
   createdAt: string;
 }
 
-export interface CreatorProfileDto {
-  user: {
-    id: string;
-    name: string;
-    username: string;
-    avatarUrl: string;
-    bio: string;
-  };
+// ── Profiles ────────────────────────────────────────────────────────────────────────────────
+
+export interface ProfileRecord {
+  user: AccountSummary & { accountType: AccountType; bio: string };
   stats: { followers: number; following: number; totalLikes: number };
-  // v3: `status` always present. Non-self grids only ever contain
-  // `published` items (FR-061) — the field is harmless there, but the
-  // self grid uses it to render Processing/Removed badges (FR-065).
-  videos: {
-    id: string;
-    thumbnailUrl: string;
-    status: 'pending_moderation' | 'published' | 'rejected' | 'hidden';
-  }[];
+  // `status` is always present. Non-self grids only contain `published` items; the owner's own
+  // grid uses it to show Processing, Removed and Under review badges.
+  videos: { id: string; media: ReelMediaRecord; status: ReelStatusValue }[];
   viewer: { following: boolean; isSelf: boolean };
 }
 
-export interface UserSearchResultDto {
-  id: string;
-  username: string;
-  name: string;
-  avatarUrl: string;
+export interface CreatorProfileDto {
+  user: ProfileRecord['user'];
+  stats: ProfileRecord['stats'];
+  videos: { id: string; thumbnailUrl: string; status: ReelStatusValue }[];
+  viewer: ProfileRecord['viewer'];
+}
+
+export interface UserSearchResultDto extends AccountSummary {
   viewerFollowing: boolean;
 }
 
-/** v5 (FR-084): a followee entry for the mention-suggestion overlay. */
-export interface FollowedUserDto {
-  id: string;
-  username: string;
-  name: string;
-  avatarUrl: string;
-}
+/** A followee or a reposter, for the mention-suggestion overlay and the reposters sheet. */
+export type FollowedUserDto = AccountSummary;
 
-/** v4 (FR-069): mirrors `ReelReportReason` schema enum's string values — kept
- * as a plain union here so this abstract-contract file stays free of any
- * Mongoose/schema import (consistent with the rest of the file). */
+// ── Moderation ──────────────────────────────────────────────────────────────────────────────
+
+/** Mirrors the report-reason enum's values, kept plain so this file imports no schema. */
 export type ReelReportReasonValue =
   'spam' | 'nudity' | 'violence' | 'hate_speech' | 'other';
 
-/** v4 (FR-071): one entry in a report-hidden reel's audit trail. */
+/** One entry in a report-hidden reel's audit trail. */
 export interface AdminReportSummary {
   reporterId: string;
   reason: string;
@@ -146,42 +141,68 @@ export interface AdminReportSummary {
   createdAt: string;
 }
 
-/** v4 (FR-071): admin-only shape — never reaches a normal user-facing DTO. */
-export interface AdminHiddenReelDto {
+/** Operator-only. Never reaches a user-facing response. */
+export interface AdminHiddenReelRecord {
   id: string;
   creator: { id: string; username: string };
-  videoUrl: string;
-  thumbnailUrl: string;
+  media: ReelMediaRecord;
   description: string;
   hiddenAt: string;
   reportsCount: number;
   reports: AdminReportSummary[];
 }
 
+export interface AdminHiddenReelDto extends Omit<
+  AdminHiddenReelRecord,
+  'media'
+> {
+  videoUrl: string;
+  thumbnailUrl: string;
+}
+
+/** What a hard delete removed, so the caller can clean up media and the hashtag dictionary. */
+export type ReelDeletion = ReelSnapshot;
+
+/** What the screening worker needs to decide a reel, and to publish it afterwards. */
+export interface ModerationCandidate extends ReelSnapshot {
+  description: string;
+  mentions: ReelMentionRecord[];
+  createdAt: Date;
+}
+
+/** The result stored with a reel when screening flags it. */
+export interface ModerationOutcome {
+  verdict: 'clean' | 'flagged';
+  flaggedSource?: 'video' | 'description';
+  categories?: string[];
+  providerRef?: string;
+}
+
 export const REELS_REPOSITORY = Symbol('REELS_REPOSITORY');
 
 export interface ReelsRepository {
   /**
-   * v3 (FR-060): creates a reel in `pending_moderation`. Hashtags/mentions
-   * are parsed by the caller (reused `reels-text.util.ts`, same as the
-   * seeder) and passed in already-resolved; no notifications are sent from
-   * here — mention notifications fire only at the publish transition
-   * (FR-063), owned by the moderation worker.
+   * Creates a reel in `pending_moderation` with its media in the private bucket. The id is
+   * generated by the caller so the object keys can contain it before the document exists
+   * (FR-033: the document is written only after the files are stored). Hashtags and mentions
+   * arrive already parsed. No notification is sent from here: mention notifications fire only at
+   * the publish transition.
    */
   createReel(params: {
+    id: string;
     creatorId: string;
-    videoUrl: string;
-    thumbnailUrl: string;
+    videoKey: string;
+    thumbnailKey: string;
     description: string;
     hashtags: string[];
-    mentions: { userId: string; username: string }[];
-  }): Promise<ReelDto>;
+    hashtagsNormalized: string[];
+    mentions: ReelMentionRecord[];
+  }): Promise<ReelRecord>;
 
   /**
-   * FR-007/FR-009: main feed loops the catalog (nextCursor never null);
-   * creator-scoped and hashtag-scoped feeds are finite.
-   * FR-052/053: `excludeCreatorIds` is the caller's mutual block set —
-   * excluded creators' reels never appear in the page.
+   * The main feed loops the catalog (nextCursor never null); creator-scoped and hashtag-scoped
+   * feeds are finite. `excludeCreatorIds` is the caller's exclusion set (blocks and accounts not
+   * in good standing): those creators' reels never appear.
    */
   listFeed(params: {
     viewerId: string;
@@ -190,13 +211,13 @@ export interface ReelsRepository {
     creatorId?: string;
     hashtag?: string;
     excludeCreatorIds: string[];
-  }): Promise<{ items: ReelDto[]; nextCursor: string | null }>;
+  }): Promise<Page<ReelRecord>>;
 
   getReel(
     id: string,
     viewerId: string,
     excludeCreatorIds: string[],
-  ): Promise<ReelDto | null>;
+  ): Promise<ReelRecord | null>;
 
   toggleLike(
     id: string,
@@ -204,7 +225,7 @@ export interface ReelsRepository {
   ): Promise<{
     liked: boolean;
     likesCount: number;
-    reel: ReelVideoRecord;
+    reel: { id: string; creatorId: string };
   } | null>;
 
   listComments(
@@ -231,79 +252,86 @@ export interface ReelsRepository {
     userId: string,
     viewerId: string,
     excludeCreatorIds: string[],
-  ): Promise<CreatorProfileDto | null>;
+  ): Promise<ProfileRecord | null>;
 
   toggleFollow(
     userId: string,
     viewerId: string,
   ): Promise<{ following: boolean; followersCount: number } | 'self' | null>;
 
-  /** FR-048: dedup per (userId, videoId); only a real insert increments viewsCount. */
+  /** Dedup per (userId, videoId); only a real insert increments viewsCount. */
   recordView(
     id: string,
     viewerId: string,
   ): Promise<{ viewsCount: number } | null>;
 
-  /** FR-049: private toggle, no public counter. */
+  /**
+   * A signed-out view: counted once per app installation per reel (FR-024). Returns the reel's
+   * view count, or null when the reel is unknown or not published.
+   */
+  recordGuestView(
+    id: string,
+    installationId: string,
+  ): Promise<{ viewsCount: number } | null>;
+
+  /** Private toggle, no public counter. */
   toggleSave(id: string, viewerId: string): Promise<{ saved: boolean } | null>;
 
-  /** FR-051: caller-scoped, newest-liked-first. */
+  /** Caller-scoped, newest-liked-first. */
   listLiked(
     viewerId: string,
     params: { cursor?: string; limit: number; excludeCreatorIds: string[] },
-  ): Promise<{ items: ReelDto[]; nextCursor: string | null }>;
+  ): Promise<Page<ReelRecord>>;
 
-  /** FR-050: caller-scoped, newest-saved-first. */
+  /** Caller-scoped, newest-saved-first. */
   listSaved(
     viewerId: string,
     params: { cursor?: string; limit: number; excludeCreatorIds: string[] },
-  ): Promise<{ items: ReelDto[]; nextCursor: string | null }>;
+  ): Promise<Page<ReelRecord>>;
 
   /**
-   * v6: [targetUserId]'s reposts, newest-repost-first — the public Reposts
-   * profile tab. Unlike liked/saved this is NOT owner-scoped (reposting is a
-   * public distribution mechanic); [viewerId] still drives block + published
-   * visibility filtering.
+   * `targetUserId`'s reposts, newest-repost-first: the public Reposts profile tab. Unlike
+   * liked/saved this is not owner-scoped, because reposting is a public distribution mechanic;
+   * `viewerId` still drives block and published-visibility filtering.
    */
   listReposted(
     viewerId: string,
     targetUserId: string,
     params: { cursor?: string; limit: number; excludeCreatorIds: string[] },
-  ): Promise<{ items: ReelDto[]; nextCursor: string | null }>;
+  ): Promise<Page<ReelRecord>>;
 
-  /** FR-057: reels whose hashtags contain `q` (case-insensitive substring). */
+  /** Reels whose normalized hashtags contain `q`. */
   searchReels(params: {
     viewerId: string;
     q: string;
     cursor?: string;
     limit: number;
     excludeCreatorIds: string[];
-  }): Promise<{ items: ReelDto[]; nextCursor: string | null }>;
+  }): Promise<Page<ReelRecord>>;
 
-  /** FR-057: users whose username/name contain `q`, excluding the caller + block set. */
+  /** Accounts whose handle or name contain `q`, excluding the caller and the exclusion set. */
   searchUsers(params: {
     viewerId: string;
     q: string;
     cursor?: string;
     limit: number;
     excludeUserIds: string[];
-  }): Promise<{ items: UserSearchResultDto[]; nextCursor: string | null }>;
+  }): Promise<Page<UserSearchResultDto>>;
 
   /**
-   * v5 (FR-084): the caller's followees, most-recently-followed first —
-   * powers the post-details `@`-mention suggestion overlay (R24).
+   * The caller's followees, most-recently-followed first: the post-details `@`-mention
+   * suggestion overlay.
    */
   getFollowingUsers(params: {
     viewerId: string;
     cursor?: string;
     limit: number;
     excludeUserIds: string[];
-  }): Promise<{ items: FollowedUserDto[]; nextCursor: string | null }>;
+  }): Promise<Page<FollowedUserDto>>;
 
   /**
-   * v6: everyone who reposted [reelId], most-recent-first — the reposters
-   * bottom sheet. Block-filtered for the viewer; `null` when the reel is
-   * unknown/not visible.
+   * Everyone who reposted `reelId`, most-recent-first: the reposters bottom sheet. Block-filtered
+   * for the viewer; null when the reel is unknown or not visible.
    */
   listReposters(
     reelId: string,
@@ -313,88 +341,71 @@ export interface ReelsRepository {
       limit: number;
       excludeUserIds: string[];
     },
-  ): Promise<{ items: FollowedUserDto[]; nextCursor: string | null } | null>;
+  ): Promise<Page<FollowedUserDto> | null>;
 
   /**
-   * v3 (FR-067): owner-only cascade delete — relation docs, reel-scoped
-   * notification events, the creator's `totalLikes` counter, and the reel
-   * doc itself. Returns the media URLs so the caller can unlink the files;
-   * `'forbidden'` when `viewerId` is not the creator; `null` when unknown.
+   * Owner-only cascade delete in any status: relation documents, reel-scoped notification events,
+   * the creator's `totalLikes`, and the reel document. Returns a snapshot so the caller can remove
+   * the media and decrement the hashtag dictionary, `'forbidden'` when `viewerId` is not the
+   * creator, or null when the reel is unknown. This method deletes data and nothing else.
    */
-  deleteReel(
+  deleteReelCascade(
     id: string,
     viewerId: string,
-  ): Promise<
-    | { deleted: true; videoUrl: string; thumbnailUrl: string }
-    | 'forbidden'
-    | null
-  >;
+  ): Promise<ReelDeletion | 'forbidden' | null>;
 
   /**
-   * v4 (FR-069/FR-070): records a report against a `published` reel (at
-   * most one per (reel, reporter) — `alreadyReported: true` on a duplicate,
-   * no side effects). A real (non-duplicate) insert `$inc`s the reel's
-   * `reportsCount`; when that crosses `REEL_REPORT_AUTOHIDE_THRESHOLD` the
-   * reel transitions `published -> hidden` via a guarded update (exactly
-   * once under concurrent reports; permanently skipped once the reel
-   * carries `adminRestored: true` — FR-070 "one auto-hide per reel ever").
-   * Returns `'self'` if the caller is the reel's creator, `'rate_limited'`
-   * if the caller has hit `REEL_REPORT_DAILY_LIMIT`, `null` if the reel is
-   * unknown/non-published.
+   * Records a report against a `published` reel: at most one per (reel, reporter), and a
+   * duplicate has no side effects. A real insert `$inc`s `reportsCount`, and when that reaches
+   * `autoHideThreshold` the reel transitions `published -> hidden` through a guarded update that
+   * fires exactly once under concurrent reports and never for a reel an operator restored.
+   *
+   * Returns `'hidden'` when this report hid the reel, so the caller can run the side effects;
+   * `'self'` when the caller is the creator; null when the reel is unknown or not published.
+   * The daily report limit is the caller's business (`countRecentReelReports`), not this method's.
    */
   reportReel(
     id: string,
     viewerId: string,
     reason: ReelReportReasonValue,
     customReason: string | undefined,
-  ): Promise<
-    | { reported: true; alreadyReported: boolean }
-    | 'self'
-    | 'rate_limited'
-    | null
-  >;
+    autoHideThreshold: number,
+  ): Promise<'reported' | 'duplicate' | 'hidden' | 'self' | null>;
+
+  /** Reel reports by `reporterId` since `since`: half of the shared daily limit (FR-055). */
+  countRecentReelReports(reporterId: string, since: Date): Promise<number>;
 
   /**
-   * v4 (FR-075): original reels created by users the viewer follows — NEVER
-   * reposts (`repostedBy` always null here). Finite, newest-first, standard
-   * visibility + block filtering.
+   * Original reels by accounts the viewer follows. Never reposts (`repostedBy` is always null).
+   * Finite, newest-first, with the standard visibility and exclusion filtering.
    */
   listFollowingFeed(params: {
     viewerId: string;
     cursor?: string;
     limit: number;
     excludeCreatorIds: string[];
-  }): Promise<{ items: ReelDto[]; nextCursor: string | null }>;
+  }): Promise<Page<ReelRecord>>;
 
-  /**
-   * v4 (FR-071): the admin review backlog — hidden reels newest-hidden-first,
-   * each with its full report list (reason/customReason/reporter/time) so
-   * operators can triage without database access. Never reaches a
-   * user-facing endpoint.
-   */
+  /** The operator review backlog: hidden reels, newest-hidden-first, with every report. */
   listHiddenReels(params: {
     cursor?: string;
     limit: number;
-  }): Promise<{ items: AdminHiddenReelDto[]; nextCursor: string | null }>;
+  }): Promise<Page<AdminHiddenReelRecord>>;
 
   /**
-   * v4 (FR-071): admin-only transition out of `hidden`. `restore` sets
-   * `adminRestored: true` (permanent auto-hide immunity, FR-070); `reject`
-   * moves the reel into the existing `rejected` presentation. Guarded
-   * (precondition `status: 'hidden'`) — `'not_hidden'` when the reel exists
-   * but isn't currently hidden (already resolved, or a race); `null` when
-   * unknown.
+   * Operator-only transition out of `hidden`. `restore` sets `adminRestored` (permanent auto-hide
+   * immunity); `reject` moves the reel to `rejected`. Guarded on `status: 'hidden'`:
+   * `'not_hidden'` when the reel exists but is not hidden (already resolved, or a race); null when
+   * unknown. Returns the updated snapshot so the caller can run the side effects.
    */
   adminModerateReel(
     id: string,
     action: 'restore' | 'reject',
-  ): Promise<{ id: string; status: string } | 'not_hidden' | null>;
+  ): Promise<ReelSnapshot | 'not_hidden' | null>;
 
   /**
-   * v4 (FR-073): explicit repost — NOT a toggle. Always sets the relation
-   * (idempotent on repeat, unique index makes a duplicate insert a no-op).
-   * `'self'` when the caller is the reel's creator (no self-repost); `null`
-   * when the reel is unknown/non-published.
+   * Explicit repost, not a toggle: always sets the relation (a duplicate is a no-op). `'self'`
+   * for the creator; null when the reel is unknown or not published.
    */
   repostReel(
     id: string,
@@ -402,12 +413,45 @@ export interface ReelsRepository {
   ): Promise<{ reposted: true } | 'self' | null>;
 
   /**
-   * v4 (FR-073): explicit un-repost — idempotent no-op if no repost
-   * existed. `null` only when the reel itself is unknown (not tied to
-   * publication status — an owner can always remove their own repost).
+   * Explicit un-repost: a no-op when there was none. Null only when the reel is unknown: an owner
+   * can always remove their own repost, whatever the reel's status.
    */
   unrepostReel(
     id: string,
     viewerId: string,
   ): Promise<{ reposted: false } | null>;
+
+  // ── Screening support (the only caller is `ReelsModerationService`) ───────────────────────
+
+  getModerationCandidate(id: string): Promise<ModerationCandidate | null>;
+
+  /**
+   * Guarded `pending_moderation -> published`: only one of any number of concurrent or retried
+   * attempts matches, so the side effects that follow fire exactly once. Null when the reel is
+   * gone or was already decided.
+   */
+  publishPending(id: string): Promise<ModerationCandidate | null>;
+
+  /** Guarded `pending_moderation -> rejected`, storing the screening result. Null as above. */
+  rejectPending(
+    id: string,
+    outcome: ModerationOutcome,
+  ): Promise<ModerationCandidate | null>;
+
+  /** Reels stuck in `pending_moderation` for longer than `staleMs`: the retry sweep's input. */
+  findStalePendingIds(staleMs: number): Promise<string[]>;
+
+  // ── Lifecycle support (the only callers are `ReelLifecycleService` and its processors) ────
+
+  getSnapshot(id: string): Promise<ReelSnapshot | null>;
+
+  /** Records which bucket a reel's files are in. */
+  setMediaLocation(id: string, location: 'private' | 'public'): Promise<void>;
+
+  /** One page of a creator's published reels, for re-applying media visibility after a standing change. */
+  listPublishedByCreator(
+    creatorId: string,
+    afterId: string | null,
+    limit: number,
+  ): Promise<ReelSnapshot[]>;
 }

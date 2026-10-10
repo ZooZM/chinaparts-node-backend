@@ -3,9 +3,12 @@ import { Document, Types } from 'mongoose';
 
 export type ReelDocument = Reel & Document;
 
+/** A reel as a plain object: what `.lean()` returns. */
+export type ReelLean = Reel & { _id: Types.ObjectId };
+
 @Schema({ _id: false })
 export class ReelMention {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'ReelsAccount', required: true })
   userId: Types.ObjectId;
 
   @Prop({ required: true })
@@ -14,12 +17,9 @@ export class ReelMention {
 
 export const ReelMentionSchema = SchemaFactory.createForClass(ReelMention);
 
-// v3 (specs/021-reels-video-feed FR-061): the reel moderation status state
-// machine. `pendingModeration` is the only entry state for uploads.
-// v4 (FR-070): `hidden` added — a *third* status writer (the report
-// service, alongside the moderation worker and the admin endpoint) can
-// now transition `published -> hidden` when the unique-reporter count
-// crosses the auto-hide threshold. See data-model.md v4's state machine.
+// The reel moderation status state machine (data-model.md, "Reel status"). `pending_moderation`
+// is the only entry state for uploads. `hidden` is entered from `published` by the auto-hide
+// threshold, and left again only by an operator.
 export enum ReelStatus {
   PENDING_MODERATION = 'pending_moderation',
   PUBLISHED = 'published',
@@ -27,8 +27,29 @@ export enum ReelStatus {
   HIDDEN = 'hidden',
 }
 
-// v3: the spec's "Moderation Result" entity, embedded 1:1 with its reel —
-// nothing ever queries a moderation result independently of its reel.
+/**
+ * Where a reel's files are. Object keys, not URLs: a URL is built per response (research R12), a
+ * public one while `location` is `public` and a presigned one for the owner otherwise.
+ *
+ * `location` is `public` only while the reel is published AND its creator is in good standing
+ * (FR-009). `ReelLifecycleService` is the only writer.
+ */
+@Schema({ _id: false })
+export class ReelMediaRef {
+  @Prop({ type: String, required: true })
+  videoKey: string;
+
+  @Prop({ type: String, required: true })
+  thumbnailKey: string;
+
+  @Prop({ type: String, enum: ['private', 'public'], default: 'private' })
+  location: 'private' | 'public';
+}
+
+export const ReelMediaRefSchema = SchemaFactory.createForClass(ReelMediaRef);
+
+// The "Moderation Result" entity, embedded 1:1 with its reel: nothing ever queries a moderation
+// result independently of its reel.
 @Schema({ _id: false })
 export class ModerationResult {
   @Prop({ type: String, enum: ['clean', 'flagged'], required: true })
@@ -50,36 +71,42 @@ export class ModerationResult {
 export const ModerationResultSchema =
   SchemaFactory.createForClass(ModerationResult);
 
-@Schema({ timestamps: { createdAt: true, updatedAt: true } })
+@Schema({
+  collection: 'reels',
+  timestamps: { createdAt: true, updatedAt: true },
+})
 export class Reel {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true, index: true })
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'ReelsAccount',
+    required: true,
+    index: true,
+  })
   creatorId: Types.ObjectId;
 
-  @Prop({ required: true })
-  videoUrl: string;
+  @Prop({ type: ReelMediaRefSchema, required: true })
+  media: ReelMediaRef;
 
-  // v3 (FR-060): the thumbnail is optional on upload — seeded/CDN content
-  // always has one, but a user upload may not attach one.
-  @Prop({ default: '' })
-  thumbnailUrl: string;
-
-  // FR-047: supports #hashtags and @mentions; parsed at write time.
-  @Prop({ default: '', maxlength: 2200 })
+  // Supports #hashtags and @mentions, parsed at write time. The limit is configurable
+  // (REEL_MAX_DESCRIPTION_LENGTH) and enforced by the DTO, so this is only a hard ceiling.
+  @Prop({ default: '', maxlength: 5000 })
   description: string;
 
-  // Normalized (lowercase, no '#'), deduped. Multikey-indexed for hashtag
-  // feeds (exact match) and search (substring regex — see reels.service.ts).
+  // As typed, without '#', deduplicated by normalized form. For display only.
   @Prop({ type: [String], default: [] })
   hashtags: string[];
 
-  // Only @mentions that resolve to an existing user (FR-047).
+  // `normalizeForMatch` of each hashtag, in the same order. Used for every match (research R8), so
+  // #إطارات and #اطارات are the same hashtag.
+  @Prop({ type: [String], default: [] })
+  hashtagsNormalized: string[];
+
+  // Only @mentions that resolve to an existing account.
   @Prop({ type: [ReelMentionSchema], default: [] })
   mentions: ReelMention[];
 
-  // v3 (FR-061): moderation status state machine. New uploads default to
-  // pending; only `published` reels are visible to non-owners on any
-  // surface (ReelsService.isVisible). The moderation worker is the only
-  // writer of transitions out of `pending_moderation` (guarded update).
+  // Only `published` reels are visible to non-owners on any surface. The moderation worker is the
+  // only writer of transitions out of `pending_moderation` (a guarded update).
   @Prop({
     type: String,
     enum: ReelStatus,
@@ -88,16 +115,16 @@ export class Reel {
   })
   status: ReelStatus;
 
-  // v3: set by the worker on the clean-verdict transition (FR-063).
+  // Set by the worker on the clean-verdict transition.
   @Prop({ required: false })
   publishedAt?: Date;
 
-  // v3: written once by the worker on either transition (FR-064).
+  // Written once by the worker on either transition.
   @Prop({ type: ModerationResultSchema, required: false })
   moderation?: ModerationResult;
 
-  // Stored counters (FR-055) — updated via $inc alongside the relation
-  // write that causes the change; never computed by aggregation on read.
+  // Stored counters, updated with $inc alongside the relation write that causes the change and
+  // never computed by aggregation on read.
   @Prop({ default: 0 })
   viewsCount: number;
 
@@ -110,18 +137,14 @@ export class Reel {
   @Prop({ default: 0 })
   sharesCount: number;
 
-  // v4 (FR-070): stored counter of unique reporters. `$inc` only on a real
-  // `reel_reports` insert; the insert that reaches
-  // `REEL_REPORT_AUTOHIDE_THRESHOLD` triggers the guarded hide transition.
-  // Never exposed on non-owner-facing DTOs.
+  // Stored counter of distinct reporters. `$inc` only on a real `reel_reports` insert; the insert
+  // that reaches REEL_REPORT_AUTOHIDE_THRESHOLD triggers the guarded hide transition. Never
+  // exposed on non-owner-facing DTOs.
   @Prop({ default: 0 })
   reportsCount: number;
 
-  // v4 (FR-070/FR-071): set `true` only by the admin restore transition and
-  // never unset — "one auto-hide per reel ever". A restored reel keeps
-  // accumulating reports for audit but is permanently immune to the
-  // auto-hide threshold; only another explicit admin action can move it
-  // out of `published` again.
+  // Set true only by the operator restore and never unset: "one auto-hide per reel ever". A
+  // restored reel keeps accumulating reports for audit but is immune to the threshold.
   @Prop({ default: false })
   adminRestored: boolean;
 
@@ -131,20 +154,13 @@ export class Reel {
 
 export const ReelSchema = SchemaFactory.createForClass(Reel);
 
-// v3: feed cursor gains a `status` equality prefix — non-owner reads always
-// filter to `published`, so this keeps the cursor pattern index-covered
-// (replaces the v2 { createdAt: -1, _id: -1 } index).
+// Non-owner reads always filter to `published`, so the status prefix keeps the feed cursor
+// index-covered.
 ReelSchema.index({ status: 1, createdAt: -1, _id: -1 });
-// v3: creator-scoped feed / profile grid — others filter `published`, the
-// owner reads all statuses (replaces the v2 { creatorId, createdAt } index).
+// Creator-scoped feed and profile grid: others filter `published`, the owner reads every status.
 ReelSchema.index({ creatorId: 1, status: 1, createdAt: -1 });
-// Hashtag feed exact-match + order (FR-047a); also backs substring search
-// (R11); the service applies the status filter on top of this index.
-ReelSchema.index({ hashtags: 1, createdAt: -1 });
-// v3 (R17): pending-sweep scan — re-enqueue reels stuck in
-// `pending_moderation` past a staleness threshold. v4: this same
-// { status, updatedAt } shape also backs the admin hidden-reel backlog
-// (GET /moderation/hidden, FR-071) — `updatedAt` advances on the hide
-// transition, so equality on `status: 'hidden'` + a descending scan of
-// this index gives "most recently hidden first" for free.
+// Hashtag feed and search, on the normalized form (research R8, R9).
+ReelSchema.index({ hashtagsNormalized: 1, createdAt: -1, _id: -1 });
+// Pending-sweep scan: re-enqueue reels stuck in `pending_moderation`. The same shape backs the
+// operator's hidden-reel backlog, since `updatedAt` advances on the hide transition.
 ReelSchema.index({ status: 1, updatedAt: 1 });

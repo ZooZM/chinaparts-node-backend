@@ -6,9 +6,12 @@ export type ReelViewDocument = ReelView & Document;
 // FR-048: a view is counted once per user per reel, at playback start.
 // The unique index below is what makes "insert-if-absent" dedup possible —
 // only an actual insert (never a duplicate-key error) triggers `$inc viewsCount`.
-@Schema({ timestamps: { createdAt: true, updatedAt: false } })
+@Schema({
+  collection: 'reel_views',
+  timestamps: { createdAt: true, updatedAt: false },
+})
 export class ReelView {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'ReelsAccount', required: true })
   userId: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, ref: 'Reel', required: true })

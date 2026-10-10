@@ -53,6 +53,7 @@ type Repo = jest.Mocked<
   Pick<
     AccountsRepository,
     | 'findByExternal'
+    | 'findByUsernamesNormalized'
     | 'findByIdLean'
     | 'createProvisioned'
     | 'updateDisplay'
@@ -68,6 +69,7 @@ type Repo = jest.Mocked<
 function setup() {
   const repo: Repo = {
     findByExternal: jest.fn(),
+    findByUsernamesNormalized: jest.fn(),
     findByIdLean: jest.fn(),
     createProvisioned: jest.fn(),
     updateDisplay: jest.fn(),
@@ -451,4 +453,28 @@ it("records the caller's locale", async () => {
     '650000000000000000000001',
     'en',
   );
+});
+
+describe('AccountsService.resolveMentions', () => {
+  it('returns the accounts that own the handles, by id and handle as typed', async () => {
+    const { repo, service } = setup();
+    const id = new Types.ObjectId();
+    repo.findByUsernamesNormalized.mockResolvedValue([
+      { _id: id, username: 'قطع_الرياض' },
+    ]);
+
+    expect(await service.resolveMentions(['قطع_الرياض', 'nobody'])).toEqual([
+      { userId: id.toString(), username: 'قطع_الرياض' },
+    ]);
+    expect(repo.findByUsernamesNormalized).toHaveBeenCalledWith([
+      'قطع_الرياض',
+      'nobody',
+    ]);
+  });
+
+  it('returns nothing when no handle matches', async () => {
+    const { repo, service } = setup();
+    repo.findByUsernamesNormalized.mockResolvedValue([]);
+    expect(await service.resolveMentions(['nobody'])).toEqual([]);
+  });
 });

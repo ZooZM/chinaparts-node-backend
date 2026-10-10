@@ -6,173 +6,279 @@ import {
   HttpStatus,
   Inject,
   Injectable,
-  Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Model, Types } from 'mongoose';
-import { Queue } from 'bullmq';
-import { User, UserDocument } from '../users/schemas/user.schema';
-import { REELS_REPOSITORY } from './reels.repository';
+import { LimitsService } from '../../common/config/limits';
+import { ErrorCode } from '../../common/errors/error-codes';
 import type {
-  ReelReportReasonValue,
-  ReelsRepository,
-} from './reels.repository';
+  AuthenticatedUser,
+  ViewerContext,
+} from '../../common/http/viewer-request';
+import { normalizeForMatch } from '../../common/text/normalize-for-match';
+import { AccountsService } from '../accounts/accounts.service';
+import { StandingService } from '../accounts/standing.service';
 import {
-  FeedQueryDto,
   CommentsQueryDto,
+  FeedQueryDto,
   FollowingUsersQueryDto,
 } from './dto/feed-query.dto';
 import { SearchQueryDto } from './dto/search-query.dto';
+import { ReelLifecycleService } from './lifecycle/reel-lifecycle.service';
+import { ReelPresenter } from './presentation/reel-presenter.service';
 import { ReelsNotificationsService } from './reels-notifications.service';
-import { parseHashtagsAndMentions } from './reels-text.util';
-import { REELS_MODERATION_QUEUE } from './reels-moderation.processor';
+import { REELS_REPOSITORY } from './reels.repository';
+import type {
+  AdminHiddenReelDto,
+  CommentDto,
+  CreatorProfileDto,
+  FollowedUserDto,
+  Page,
+  ReelDto,
+  ReelReportReasonValue,
+  ReelsRepository,
+  UserSearchResultDto,
+} from './reels.repository';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Page size of the mention-suggestion list: not one of the FR-070 limits. */
+const FOLLOWING_USERS_PAGE = { default: 50, max: 100 };
+const ADMIN_PAGE = { default: 20, max: 50 };
+
+/**
+ * Orchestrates the reels use cases. It owns the decisions: who may see what, what counts as an
+ * error, and which side effects follow a transition. Data access lives in the repository, and
+ * turning records into responses lives in the presenter (research R22).
+ */
 @Injectable()
 export class ReelsService {
-  private readonly logger = new Logger(ReelsService.name);
-
   constructor(
     @Inject(REELS_REPOSITORY) private readonly repository: ReelsRepository,
-    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
+    private readonly accounts: AccountsService,
+    private readonly standing: StandingService,
+    private readonly presenter: ReelPresenter,
+    private readonly lifecycle: ReelLifecycleService,
     private readonly notifications: ReelsNotificationsService,
-    @InjectQueue(REELS_MODERATION_QUEUE)
-    private readonly moderationQueue: Queue,
+    private readonly limits: LimitsService,
   ) {}
 
-  /**
-   * v3 (FR-060/FR-062): creates the reel as `pending_moderation` and
-   * enqueues the background moderation job. R17/plan rule 8: enqueue
-   * failure (e.g. Redis briefly down) MUST NOT fail the upload — the reel
-   * stays pending and the worker's boot/interval sweep picks it up later
-   * (fail-closed, never fail-open).
-   */
-  async createReel(params: {
-    creatorId: string;
-    videoUrl: string;
-    thumbnailUrl: string;
-    description: string;
-  }) {
-    const { hashtags, mentions } = await parseHashtagsAndMentions(
-      params.description,
-      this.userModel,
-    );
-    const reel = await this.repository.createReel({
-      creatorId: params.creatorId,
-      videoUrl: params.videoUrl,
-      thumbnailUrl: params.thumbnailUrl,
-      description: params.description,
-      hashtags,
-      mentions,
-    });
-    try {
-      await this.moderationQueue.add(
-        'moderate',
-        { reelId: reel.id },
-        {
-          jobId: reel.id,
-          attempts: 5,
-          backoff: { type: 'exponential', delay: 30_000 },
-        },
-      );
-    } catch (err) {
-      this.logger.warn(
-        `Failed to enqueue moderation job for reel ${reel.id}: ${(err as Error).message} — sweep will retry`,
-      );
-    }
-    return reel;
-  }
+  // ── Visibility ───────────────────────────────────────────────────────────
 
   /**
-   * FR-052/053: the caller's mutual block set — their own `blockedUsers`
-   * plus everyone who has blocked them (reverse lookup via the multikey
-   * index on `blockedUsers`). Applied to every read below; never enforced
-   * client-side.
+   * Everyone whose content this viewer must not see: the accounts they blocked, the accounts that
+   * blocked them (FR-047), and the accounts not in good standing (FR-009). Applied to every read.
+   *
+   * The viewer is always removed from it: an owner sees their own reels in every state, including
+   * while they are out of good standing. A signed-out visitor has only the standing set.
    */
-  private async getBlockSet(viewerId: string): Promise<string[]> {
-    if (!Types.ObjectId.isValid(viewerId)) return [];
-    const viewerObjectId = new Types.ObjectId(viewerId);
-    const [viewer, reverseBlockers] = await Promise.all([
-      this.userModel
-        .findById(viewerObjectId)
-        .select('blockedUsers')
-        .lean()
-        .exec(),
-      this.userModel
-        .find({ blockedUsers: viewerObjectId })
-        .select('_id')
-        .lean()
-        .exec(),
+  private async exclusionSet(viewerId: string): Promise<string[]> {
+    const [blocks, outOfStanding] = await Promise.all([
+      viewerId ? this.accounts.getBlockSet(viewerId) : Promise.resolve([]),
+      this.standing.members(),
     ]);
-    const own = (viewer?.blockedUsers ?? []).map((id) => id.toString());
-    const reverse = reverseBlockers.map((u) => u._id.toString());
-    return [...new Set([...own, ...reverse])];
+    const excluded = new Set<string>([...blocks, ...outOfStanding]);
+    excluded.delete(viewerId);
+    return [...excluded];
   }
 
-  async getFeed(viewerId: string, query: FeedQueryDto) {
-    const excludeCreatorIds = await this.getBlockSet(viewerId);
-    return this.repository.listFeed({
+  private idOf(viewer: ViewerContext): string {
+    return viewer.user?.userId ?? '';
+  }
+
+  private async presentPage(
+    page: Page<Parameters<ReelPresenter['presentOne']>[0]>,
+    viewer: ViewerContext,
+  ): Promise<Page<ReelDto>> {
+    return {
+      items: await this.presenter.present(page.items, viewer),
+      nextCursor: page.nextCursor,
+    };
+  }
+
+  // ── Feeds and lists ──────────────────────────────────────────────────────
+
+  async getFeed(
+    viewer: ViewerContext,
+    query: FeedQueryDto,
+  ): Promise<Page<ReelDto>> {
+    const viewerId = this.idOf(viewer);
+    const hashtag = query.hashtag
+      ? normalizeForMatch(query.hashtag.replace(/^#+/, ''))
+      : undefined;
+    const page = await this.repository.listFeed({
       viewerId,
       cursor: query.cursor,
-      limit: query.limit ?? 10,
+      limit: this.limits.clampPageSize('feed', query.limit),
       creatorId: query.creatorId,
-      hashtag: query.hashtag,
-      excludeCreatorIds,
+      hashtag: hashtag || undefined,
+      excludeCreatorIds: await this.exclusionSet(viewerId),
+    });
+    return this.presentPage(page, viewer);
+  }
+
+  /** Following tab: original reels only, no reposts (FR-018). */
+  async getFollowingFeed(
+    user: AuthenticatedUser,
+    query: FeedQueryDto,
+  ): Promise<Page<ReelDto>> {
+    const page = await this.repository.listFollowingFeed({
+      viewerId: user.userId,
+      cursor: query.cursor,
+      limit: this.limits.clampPageSize('feed', query.limit),
+      excludeCreatorIds: await this.exclusionSet(user.userId),
+    });
+    return this.presentPage(page, { user });
+  }
+
+  /** The caller's followees, for the mention-suggestion overlay (FR-046). */
+  async getFollowingUsers(
+    user: AuthenticatedUser,
+    query: FollowingUsersQueryDto,
+  ): Promise<Page<FollowedUserDto>> {
+    return this.repository.getFollowingUsers({
+      viewerId: user.userId,
+      cursor: query.cursor,
+      limit: Math.min(
+        query.limit ?? FOLLOWING_USERS_PAGE.default,
+        FOLLOWING_USERS_PAGE.max,
+      ),
+      excludeUserIds: await this.exclusionSet(user.userId),
     });
   }
 
-  /** v4 (FR-075): Following tab — original reels only, no reposts. */
-  async getFollowingFeed(viewerId: string, query: FeedQueryDto) {
-    const excludeCreatorIds = await this.getBlockSet(viewerId);
-    return this.repository.listFollowingFeed({
+  /** Everyone who reposted a reel, for the reposters sheet. */
+  async getReposters(
+    viewer: ViewerContext,
+    reelId: string,
+    query: FeedQueryDto,
+  ): Promise<Page<FollowedUserDto>> {
+    const viewerId = this.idOf(viewer);
+    const page = await this.repository.listReposters(reelId, {
       viewerId,
       cursor: query.cursor,
-      limit: query.limit ?? 10,
-      excludeCreatorIds,
+      limit: this.limits.clampPageSize('comments', query.limit),
+      excludeUserIds: await this.exclusionSet(viewerId),
     });
+    if (page === null) throw this.reelNotFound();
+    return page;
+  }
+
+  async getLiked(
+    user: AuthenticatedUser,
+    query: FeedQueryDto,
+  ): Promise<Page<ReelDto>> {
+    const page = await this.repository.listLiked(user.userId, {
+      cursor: query.cursor,
+      limit: this.limits.clampPageSize('feed', query.limit),
+      excludeCreatorIds: await this.exclusionSet(user.userId),
+    });
+    return this.presentPage(page, { user });
+  }
+
+  async getSaved(
+    user: AuthenticatedUser,
+    query: FeedQueryDto,
+  ): Promise<Page<ReelDto>> {
+    const page = await this.repository.listSaved(user.userId, {
+      cursor: query.cursor,
+      limit: this.limits.clampPageSize('feed', query.limit),
+      excludeCreatorIds: await this.exclusionSet(user.userId),
+    });
+    return this.presentPage(page, { user });
   }
 
   /**
-   * v5 (FR-084): the caller's followees, most-recently-followed first —
-   * powers the post-details `@`-mention suggestion overlay (R24/contracts §31).
+   * The public Reposts list of `query.userId`. Signed-in callers default to themselves; a
+   * signed-out visitor must say whose list they want (FR-004, FR-061).
    */
-  async getFollowingUsers(viewerId: string, query: FollowingUsersQueryDto) {
-    const excludeUserIds = await this.getBlockSet(viewerId);
-    return this.repository.getFollowingUsers({
-      viewerId,
+  async getReposted(
+    viewer: ViewerContext,
+    query: FeedQueryDto,
+  ): Promise<Page<ReelDto>> {
+    const viewerId = this.idOf(viewer);
+    const targetId = query.userId ?? (viewerId || undefined);
+    if (!targetId) {
+      throw new BadRequestException({
+        error: ErrorCode.VALIDATION_FAILED,
+        message: 'userId is required',
+      });
+    }
+    const page = await this.repository.listReposted(viewerId, targetId, {
       cursor: query.cursor,
-      limit: query.limit ?? 50,
-      excludeUserIds,
+      limit: this.limits.clampPageSize('feed', query.limit),
+      excludeCreatorIds: await this.exclusionSet(viewerId),
+    });
+    return this.presentPage(page, viewer);
+  }
+
+  /** Hashtag search, on the normalized form (FR-049, FR-049a). */
+  async searchReels(
+    user: AuthenticatedUser,
+    query: SearchQueryDto,
+  ): Promise<Page<ReelDto>> {
+    const page = await this.repository.searchReels({
+      viewerId: user.userId,
+      q: normalizeForMatch(query.q),
+      cursor: query.cursor,
+      limit: this.limits.clampPageSize('feed', query.limit),
+      excludeCreatorIds: await this.exclusionSet(user.userId),
+    });
+    return this.presentPage(page, { user });
+  }
+
+  async searchUsers(
+    user: AuthenticatedUser,
+    query: SearchQueryDto,
+  ): Promise<Page<UserSearchResultDto>> {
+    return this.repository.searchUsers({
+      viewerId: user.userId,
+      q: normalizeForMatch(query.q),
+      cursor: query.cursor,
+      limit: this.limits.clampPageSize('feed', query.limit),
+      excludeUserIds: await this.exclusionSet(user.userId),
     });
   }
 
-  /** v6: everyone who reposted a reel — the reposters bottom sheet. */
-  async getReposters(viewerId: string, reelId: string, query: FeedQueryDto) {
-    const excludeUserIds = await this.getBlockSet(viewerId);
-    const result = await this.repository.listReposters(reelId, {
+  // ── A single reel ────────────────────────────────────────────────────────
+
+  async getReel(viewer: ViewerContext, id: string): Promise<ReelDto> {
+    const viewerId = this.idOf(viewer);
+    const record = await this.repository.getReel(
+      id,
       viewerId,
-      cursor: query.cursor,
-      limit: query.limit ?? 20,
-      excludeUserIds,
-    });
-    if (result === null) throw new NotFoundException('Reel not found');
-    return result;
+      await this.exclusionSet(viewerId),
+    );
+    if (!record) throw this.reelNotFound();
+    return this.presenter.presentOne(record, viewer);
   }
 
-  async getReel(id: string, viewerId: string) {
-    const excludeCreatorIds = await this.getBlockSet(viewerId);
-    const reel = await this.repository.getReel(id, viewerId, excludeCreatorIds);
-    if (!reel) throw new NotFoundException('Reel not found');
-    return reel;
+  /** Owner-only, any status. The reel's files and its place in the hashtag dictionary go with it. */
+  async deleteReel(
+    user: AuthenticatedUser,
+    id: string,
+  ): Promise<{ deleted: true }> {
+    const result = await this.repository.deleteReelCascade(id, user.userId);
+    if (result === null) throw this.reelNotFound();
+    if (result === 'forbidden') {
+      throw new ForbiddenException({
+        error: ErrorCode.NOT_REEL_OWNER,
+        message: 'Only the owner can delete this reel',
+      });
+    }
+    await this.lifecycle.onDeleted(result);
+    return { deleted: true };
   }
 
-  async toggleLike(id: string, viewerId: string) {
-    const result = await this.repository.toggleLike(id, viewerId);
-    if (!result) throw new NotFoundException('Reel not found');
+  // ── Engagement ───────────────────────────────────────────────────────────
+
+  async toggleLike(
+    user: AuthenticatedUser,
+    id: string,
+  ): Promise<{ liked: boolean; likesCount: number }> {
+    const result = await this.repository.toggleLike(id, user.userId);
+    if (!result) throw this.reelNotFound();
     if (result.liked) {
       await this.notifications.notifyReelLike({
-        actorId: viewerId,
+        actorId: user.userId,
         recipientId: result.reel.creatorId,
         reelId: result.reel.id,
       });
@@ -180,230 +286,248 @@ export class ReelsService {
     return { liked: result.liked, likesCount: result.likesCount };
   }
 
-  async getComments(id: string, viewerId: string, query: CommentsQueryDto) {
-    const excludeAuthorIds = await this.getBlockSet(viewerId);
+  async getComments(
+    viewer: ViewerContext,
+    id: string,
+    query: CommentsQueryDto,
+  ): Promise<{
+    items: CommentDto[];
+    nextCursor: string | null;
+    commentsCount: number;
+  }> {
+    const viewerId = this.idOf(viewer);
     const result = await this.repository.listComments(id, {
       cursor: query.cursor,
-      limit: query.limit ?? 20,
-      excludeAuthorIds,
+      limit: this.limits.clampPageSize('comments', query.limit),
+      excludeAuthorIds: await this.exclusionSet(viewerId),
     });
-    if (!result) throw new NotFoundException('Reel not found');
+    if (!result) throw this.reelNotFound();
     return result;
   }
 
-  async addComment(id: string, viewerId: string, text: string) {
-    const result = await this.repository.addComment(id, viewerId, text);
-    if (!result) throw new NotFoundException('Reel not found');
+  async addComment(
+    user: AuthenticatedUser,
+    id: string,
+    text: string,
+  ): Promise<{ comment: CommentDto; commentsCount: number }> {
+    const result = await this.repository.addComment(id, user.userId, text);
+    if (!result) throw this.reelNotFound();
     return result;
   }
 
-  async recordShare(id: string, viewerId: string) {
-    const result = await this.repository.recordShare(id, viewerId);
-    if (!result) throw new NotFoundException('Reel not found');
+  /** Copy Link only (FR-042). */
+  async recordShare(
+    user: AuthenticatedUser,
+    id: string,
+  ): Promise<{ sharesCount: number }> {
+    const result = await this.repository.recordShare(id, user.userId);
+    if (!result) throw this.reelNotFound();
     return result;
   }
 
-  async getProfile(userId: string, viewerId: string) {
-    const excludeCreatorIds = await this.getBlockSet(viewerId);
-    const profile = await this.repository.getProfile(
+  /**
+   * A view counts once per account per reel, and once per app installation for a signed-out
+   * visitor (FR-024). A signed-out request without an installation id records nothing, and just
+   * reports the current count.
+   */
+  async recordView(
+    viewer: ViewerContext,
+    id: string,
+  ): Promise<{ viewsCount: number }> {
+    let result: { viewsCount: number } | null;
+    if (viewer.user) {
+      result = await this.repository.recordView(id, viewer.user.userId);
+    } else if (viewer.installationId) {
+      result = await this.repository.recordGuestView(id, viewer.installationId);
+    } else {
+      const reel = await this.repository.getReel(
+        id,
+        '',
+        await this.exclusionSet(''),
+      );
+      result = reel ? { viewsCount: reel.viewsCount } : null;
+    }
+    if (!result) throw this.reelNotFound();
+    return result;
+  }
+
+  /** A private toggle with no public counter (FR-041). */
+  async toggleSave(
+    user: AuthenticatedUser,
+    id: string,
+  ): Promise<{ saved: boolean }> {
+    const result = await this.repository.toggleSave(id, user.userId);
+    if (!result) throw this.reelNotFound();
+    return result;
+  }
+
+  // ── Reposts ──────────────────────────────────────────────────────────────
+
+  async repostReel(
+    user: AuthenticatedUser,
+    id: string,
+  ): Promise<{ reposted: true }> {
+    const result = await this.repository.repostReel(id, user.userId);
+    if (result === null) throw this.reelNotFound();
+    if (result === 'self') {
+      throw new BadRequestException({
+        error: ErrorCode.CANNOT_REPOST_OWN_REEL,
+        message: 'Cannot repost your own reel',
+      });
+    }
+    return result;
+  }
+
+  async unrepostReel(
+    user: AuthenticatedUser,
+    id: string,
+  ): Promise<{ reposted: false }> {
+    const result = await this.repository.unrepostReel(id, user.userId);
+    if (result === null) throw this.reelNotFound();
+    return result;
+  }
+
+  // ── Profiles and the social graph ───────────────────────────────────────
+
+  async getProfile(
+    viewer: ViewerContext,
+    userId: string,
+  ): Promise<CreatorProfileDto> {
+    const viewerId = this.idOf(viewer);
+    const record = await this.repository.getProfile(
       userId,
       viewerId,
-      excludeCreatorIds,
+      await this.exclusionSet(viewerId),
     );
-    if (!profile) throw new NotFoundException('User not found');
-    return profile;
+    if (!record) throw this.accountNotFound();
+    return this.presenter.presentProfile(record, viewer);
   }
 
-  async toggleFollow(userId: string, viewerId: string) {
-    const result = await this.repository.toggleFollow(userId, viewerId);
+  async toggleFollow(
+    user: AuthenticatedUser,
+    userId: string,
+  ): Promise<{ following: boolean; followersCount: number }> {
+    const result = await this.repository.toggleFollow(userId, user.userId);
     if (result === 'self') {
-      throw new BadRequestException('Cannot follow yourself');
+      throw new BadRequestException({
+        error: ErrorCode.CANNOT_FOLLOW_SELF,
+        message: 'Cannot follow yourself',
+      });
     }
-    if (!result) throw new NotFoundException('User not found');
+    if (!result) throw this.accountNotFound();
     if (result.following) {
       await this.notifications.notifyNewFollower({
-        actorId: viewerId,
+        actorId: user.userId,
         recipientId: userId,
       });
     }
     return result;
   }
 
-  /** FR-048: dedup per (userId, videoId); recorded once per reel per user. */
-  async recordView(id: string, viewerId: string) {
-    const result = await this.repository.recordView(id, viewerId);
-    if (!result) throw new NotFoundException('Reel not found');
-    return result;
+  /** A directed block. It hides reels and comments both ways and touches nothing in China Parts (FR-048). */
+  async toggleBlock(
+    user: AuthenticatedUser,
+    targetId: string,
+  ): Promise<{ blocked: boolean }> {
+    return this.accounts.toggleBlock(user.userId, targetId);
   }
 
-  /** FR-049: private toggle, no public counter. */
-  async toggleSave(id: string, viewerId: string) {
-    const result = await this.repository.toggleSave(id, viewerId);
-    if (!result) throw new NotFoundException('Reel not found');
-    return result;
-  }
-
-  /** FR-051. */
-  async getLiked(viewerId: string, query: FeedQueryDto) {
-    const excludeCreatorIds = await this.getBlockSet(viewerId);
-    return this.repository.listLiked(viewerId, {
-      cursor: query.cursor,
-      limit: query.limit ?? 10,
-      excludeCreatorIds,
-    });
-  }
-
-  /** FR-050. */
-  async getSaved(viewerId: string, query: FeedQueryDto) {
-    const excludeCreatorIds = await this.getBlockSet(viewerId);
-    return this.repository.listSaved(viewerId, {
-      cursor: query.cursor,
-      limit: query.limit ?? 10,
-      excludeCreatorIds,
-    });
-  }
+  // ── Reporting and operator review ────────────────────────────────────────
 
   /**
-   * v6: the public Reposts profile tab — reposts by `query.userId` (defaults
-   * to the caller). Block/published visibility is applied for the viewer.
+   * Reports a reel. The daily limit is checked here, in the service (FR-055), because the
+   * repository only counts. A report that reaches the auto-hide threshold hides the reel, and the
+   * lifecycle takes its public files down (FR-056).
    */
-  async getReposted(viewerId: string, query: FeedQueryDto) {
-    const excludeCreatorIds = await this.getBlockSet(viewerId);
-    return this.repository.listReposted(viewerId, query.userId ?? viewerId, {
-      cursor: query.cursor,
-      limit: query.limit ?? 10,
-      excludeCreatorIds,
-    });
-  }
-
-  /** FR-057: hashtag substring search, block-filtered (FR-059). */
-  async searchReels(viewerId: string, query: SearchQueryDto) {
-    const excludeCreatorIds = await this.getBlockSet(viewerId);
-    return this.repository.searchReels({
-      viewerId,
-      q: query.q,
-      cursor: query.cursor,
-      limit: query.limit ?? 10,
-      excludeCreatorIds,
-    });
-  }
-
-  /** FR-057: username/name substring search, excludes caller + block set (FR-059). */
-  async searchUsers(viewerId: string, query: SearchQueryDto) {
-    const excludeUserIds = await this.getBlockSet(viewerId);
-    return this.repository.searchUsers({
-      viewerId,
-      q: query.q,
-      cursor: query.cursor,
-      limit: query.limit ?? 10,
-      excludeUserIds,
-    });
-  }
-
-  /** FR-052: directed block, toggled on the shared `User.blockedUsers` list. */
-  async toggleBlock(targetId: string, viewerId: string) {
-    if (targetId === viewerId) {
-      throw new BadRequestException('Cannot block yourself');
-    }
-    if (!Types.ObjectId.isValid(targetId)) {
-      throw new NotFoundException('User not found');
-    }
-    const target = await this.userModel.findById(targetId).exec();
-    if (!target) throw new NotFoundException('User not found');
-
-    const viewerObjectId = new Types.ObjectId(viewerId);
-    const targetObjectId = new Types.ObjectId(targetId);
-    const viewer = await this.userModel.findById(viewerObjectId).exec();
-    if (!viewer) throw new NotFoundException('User not found');
-
-    const alreadyBlocked = viewer.blockedUsers.some((id) =>
-      id.equals(targetObjectId),
-    );
-    if (alreadyBlocked) {
-      await this.userModel
-        .updateOne(
-          { _id: viewerObjectId },
-          { $pull: { blockedUsers: targetObjectId } },
-        )
-        .exec();
-      return { blocked: false };
-    }
-    await this.userModel
-      .updateOne(
-        { _id: viewerObjectId },
-        { $addToSet: { blockedUsers: targetObjectId } },
-      )
-      .exec();
-    return { blocked: true };
-  }
-
-  /** v3 (FR-067): owner-only cascade delete, any status. */
-  async deleteReel(id: string, viewerId: string) {
-    const result = await this.repository.deleteReel(id, viewerId);
-    if (result === null) throw new NotFoundException('Reel not found');
-    if (result === 'forbidden') {
-      throw new ForbiddenException('Only the owner can delete this reel');
-    }
-    return { deleted: true as const };
-  }
-
-  /** v4 (FR-069/FR-070): report a reel; may trigger the auto-hide transition. */
   async reportReel(
+    user: AuthenticatedUser,
     id: string,
-    viewerId: string,
     dto: { reason: ReelReportReasonValue; customReason?: string },
-  ) {
-    const result = await this.repository.reportReel(
-      id,
-      viewerId,
-      dto.reason,
-      dto.customReason,
+  ): Promise<{ reported: true; alreadyReported: boolean }> {
+    const recent = await this.repository.countRecentReelReports(
+      user.userId,
+      new Date(Date.now() - DAY_MS),
     );
-    if (result === null) throw new NotFoundException('Reel not found');
-    if (result === 'self') {
-      throw new BadRequestException('Cannot report your own reel');
-    }
-    if (result === 'rate_limited') {
+    if (recent >= this.limits.reportDailyLimit) {
       throw new HttpException(
-        'Daily report limit reached',
+        {
+          error: ErrorCode.REPORT_DAILY_LIMIT,
+          message: 'Daily report limit reached',
+        },
         HttpStatus.TOO_MANY_REQUESTS,
       );
     }
-    return result;
+
+    const outcome = await this.repository.reportReel(
+      id,
+      user.userId,
+      dto.reason,
+      dto.customReason,
+      this.limits.reportAutoHideThreshold,
+    );
+    if (outcome === null) throw this.reelNotFound();
+    if (outcome === 'self') {
+      throw new BadRequestException({
+        error: ErrorCode.CANNOT_REPORT_OWN_REEL,
+        message: 'Cannot report your own reel',
+      });
+    }
+    if (outcome === 'hidden') {
+      const snapshot = await this.repository.getSnapshot(id);
+      if (snapshot) await this.lifecycle.onUnpublished(snapshot);
+    }
+    return { reported: true, alreadyReported: outcome === 'duplicate' };
   }
 
-  /** v4 (FR-071): admin review backlog. */
-  async listHiddenReels(query: { cursor?: string; limit?: number }) {
-    return this.repository.listHiddenReels({
+  /** The operator backlog of hidden reels. */
+  async listHiddenReels(query: {
+    cursor?: string;
+    limit?: number;
+  }): Promise<Page<AdminHiddenReelDto>> {
+    const page = await this.repository.listHiddenReels({
       cursor: query.cursor,
-      limit: query.limit ?? 20,
+      limit: Math.min(query.limit ?? ADMIN_PAGE.default, ADMIN_PAGE.max),
+    });
+    return {
+      items: await this.presenter.presentHidden(page.items),
+      nextCursor: page.nextCursor,
+    };
+  }
+
+  /** Operator restore or reject of a hidden reel. A restore puts the files back (FR-058). */
+  async adminModerateReel(
+    id: string,
+    action: 'restore' | 'reject',
+  ): Promise<{ id: string; status: string }> {
+    const result = await this.repository.adminModerateReel(id, action);
+    if (result === null) throw this.reelNotFound();
+    if (result === 'not_hidden') {
+      throw new ConflictException({
+        error: ErrorCode.REEL_NOT_HIDDEN,
+        message: 'Reel is not hidden',
+      });
+    }
+    if (action === 'restore') {
+      await this.lifecycle.onRestored(result);
+    } else {
+      await this.lifecycle.onUnpublished(result);
+    }
+    return { id: result.id, status: result.status };
+  }
+
+  // ── Errors ───────────────────────────────────────────────────────────────
+
+  private reelNotFound(): NotFoundException {
+    return new NotFoundException({
+      error: ErrorCode.REEL_NOT_FOUND,
+      message: 'Reel not found',
     });
   }
 
-  /** v4 (FR-071): admin restore/reject a hidden reel. */
-  async adminModerateReel(id: string, action: 'restore' | 'reject') {
-    const result = await this.repository.adminModerateReel(id, action);
-    if (result === null) throw new NotFoundException('Reel not found');
-    if (result === 'not_hidden') {
-      throw new ConflictException('Reel is not hidden');
-    }
-    return result;
-  }
-
-  /** v4 (FR-073): explicit repost. */
-  async repostReel(id: string, viewerId: string) {
-    const result = await this.repository.repostReel(id, viewerId);
-    if (result === null) throw new NotFoundException('Reel not found');
-    if (result === 'self') {
-      throw new BadRequestException('Cannot repost your own reel');
-    }
-    return result;
-  }
-
-  /** v4 (FR-073): explicit un-repost. */
-  async unrepostReel(id: string, viewerId: string) {
-    const result = await this.repository.unrepostReel(id, viewerId);
-    if (result === null) throw new NotFoundException('Reel not found');
-    return result;
+  private accountNotFound(): NotFoundException {
+    return new NotFoundException({
+      error: ErrorCode.ACCOUNT_NOT_FOUND,
+      message: 'Account not found',
+    });
   }
 }

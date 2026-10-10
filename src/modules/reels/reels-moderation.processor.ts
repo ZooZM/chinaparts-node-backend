@@ -1,77 +1,72 @@
-import { Processor, WorkerHost, InjectQueue } from '@nestjs/bullmq';
+import { InjectQueue, Processor } from '@nestjs/bullmq';
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Job, Queue } from 'bullmq';
+import { RoleAwareWorkerHost } from '../../common/queues/role-aware-worker.host';
+import { QUEUE_REELS_MODERATION } from '../../common/queues/queue-names';
 import {
-  Injectable,
-  Logger,
-  OnModuleInit,
-  OnModuleDestroy,
-} from '@nestjs/common';
-import { Queue, Job } from 'bullmq';
+  MODERATION_JOB,
+  MODERATION_JOB_OPTIONS,
+} from './moderation/moderation-job';
 import { ReelsModerationService } from './reels-moderation.service';
 
-export const REELS_MODERATION_QUEUE = 'reels-moderation';
-/** R17: reels stuck pending past this age are candidates for the sweep. */
+/** Reels stuck pending for longer than this are candidates for the sweep. */
 const STALE_THRESHOLD_MS = 5 * 60 * 1000;
-/** R17: how often the sweep scans for stuck reels. */
+/** How often the sweep scans for stuck reels. */
 const SWEEP_INTERVAL_MS = 2 * 60 * 1000;
 
 /**
- * v3 (R17): thin BullMQ wrapper — all moderation logic lives in
- * `ReelsModerationService` so it can be exercised without a live queue
- * (see that file's docstring). This class owns only: pulling jobs off the
- * real queue, and the periodic sweep that re-enqueues reels stuck pending
- * (Redis hiccup at enqueue time, or a worker crash mid-job — fail-closed,
- * never fail-open).
+ * A thin BullMQ wrapper: all moderation logic lives in `ReelsModerationService`. It owns pulling
+ * jobs off the queue, and the periodic sweep that re-enqueues reels stuck pending (a Redis
+ * hiccup at enqueue time, a worker crash mid-job, or retries that ran out during a provider
+ * outage), failing closed and never open (FR-031).
+ *
+ * Runs only in a worker process (`WORKER_ROLE`), see `RoleAwareWorkerHost`.
  */
 @Injectable()
-@Processor(REELS_MODERATION_QUEUE)
-export class ReelsModerationProcessor
-  extends WorkerHost
-  implements OnModuleInit, OnModuleDestroy
-{
-  private readonly logger = new Logger(ReelsModerationProcessor.name);
+@Processor(QUEUE_REELS_MODERATION, { autorun: false })
+export class ReelsModerationProcessor extends RoleAwareWorkerHost {
   private sweepTimer?: ReturnType<typeof setInterval>;
 
   constructor(
     private readonly moderation: ReelsModerationService,
-    @InjectQueue(REELS_MODERATION_QUEUE) private readonly queue: Queue,
+    @InjectQueue(QUEUE_REELS_MODERATION) private readonly queue: Queue,
+    config: ConfigService,
   ) {
-    super();
+    super(config);
   }
 
-  // NOTE: the actual BullMQ Worker (bound to this class's `process()`) is
-  // created externally by `@nestjs/bullmq`'s `BullExplorer` — a
-  // `DiscoveryService`-driven registrar that scans for `@Processor`-
-  // decorated providers at application bootstrap. `WorkerHost` itself
-  // declares no lifecycle hooks (just the `worker` getter), so this
-  // `onModuleInit` only ever needs to own the sweep timer.
-  onModuleInit(): void {
+  protected onWorkerStart(): void {
     void this.sweep();
     this.sweepTimer = setInterval(() => void this.sweep(), SWEEP_INTERVAL_MS);
   }
 
-  onModuleDestroy(): void {
+  protected onWorkerStop(): void {
     if (this.sweepTimer) clearInterval(this.sweepTimer);
   }
 
   async process(job: Job<{ reelId: string }>): Promise<void> {
-    // Fail-closed (FR-066): a thrown error here is the point — BullMQ's
-    // retry policy (registered in reels.module.ts) takes over and the reel
-    // simply stays pending_moderation.
+    // A thrown error is the point: the queue's retry policy takes over and the reel stays pending.
     await this.moderation.moderateReel(job.data.reelId);
   }
 
-  private async sweep(): Promise<void> {
+  /** Re-enqueues every stale pending reel. Exposed for tests. */
+  async sweep(): Promise<void> {
     try {
       const staleIds =
         await this.moderation.findStalePendingIds(STALE_THRESHOLD_MS);
       for (const reelId of staleIds) {
-        await this.queue.add('moderate', { reelId }, { jobId: reelId });
+        await this.queue.add(
+          MODERATION_JOB,
+          { reelId },
+          { jobId: reelId, ...MODERATION_JOB_OPTIONS },
+        );
       }
       if (staleIds.length > 0) {
         this.logger.log(`Sweep re-enqueued ${staleIds.length} stale reel(s)`);
       }
-    } catch (err) {
-      this.logger.warn(`Sweep failed: ${(err as Error).message}`);
+    } catch (error) {
+      this.logger.warn(`Sweep failed: ${String(error)}`);
     }
   }
 }

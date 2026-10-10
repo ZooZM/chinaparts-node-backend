@@ -1,96 +1,104 @@
+import { Logger } from '@nestjs/common';
+import { NotificationEventsRepository } from './notification-events.repository';
 import { ReelsNotificationsService } from './reels-notifications.service';
 import { NotificationEventType } from './schemas/notification-event.schema';
 
-interface MockEventModel {
-  create: jest.Mock;
-}
-interface MockUserModel {
-  findById: jest.Mock;
-}
-interface MockPushService {
-  sendPush: jest.Mock;
-}
-interface MockDeviceTokens {
-  getTokens: jest.Mock;
-}
-
 /**
- * FR-054: no self-events, no re-notify on a duplicate action, delivery is
- * attempted only after the event is durably recorded.
+ * FR-062 to FR-066: no self-events, no re-notify on a duplicate action, delivery is attempted
+ * only after the event is durably recorded, and a failure never reaches the caller.
  */
 describe('ReelsNotificationsService', () => {
-  let eventModel: MockEventModel;
-  let userModel: MockUserModel;
-  let pushService: MockPushService;
-  let deviceTokens: MockDeviceTokens;
-  let service: ReelsNotificationsService;
-
   const actorId = '65f1a2b3c4d5e6f7a8b9c0d1';
   const recipientId = '65f1a2b3c4d5e6f7a8b9c0d2';
   const reelId = '65f1a2b3c4d5e6f7a8b9c0e1';
 
+  let events: { recordIfNew: jest.Mock };
+  let sender: { send: jest.Mock };
+  let service: ReelsNotificationsService;
+
   beforeEach(() => {
-    eventModel = { create: jest.fn().mockResolvedValue({}) };
-    userModel = {
-      findById: jest.fn(() => ({
-        select: () => ({
-          lean: () => ({ exec: () => Promise.resolve({ name: 'Actor' }) }),
-        }),
-      })),
-    };
-    pushService = { sendPush: jest.fn().mockResolvedValue(undefined) };
-    deviceTokens = {
-      getTokens: jest.fn().mockResolvedValue([{ token: 'device-token-1' }]),
-    };
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    events = { recordIfNew: jest.fn().mockResolvedValue(true) };
+    sender = { send: jest.fn().mockResolvedValue(undefined) };
     service = new ReelsNotificationsService(
-      eventModel as never,
-      userModel as never,
-      pushService,
-      deviceTokens,
+      events as unknown as NotificationEventsRepository,
+      sender,
     );
   });
 
-  it('records an event and sends a push for a new follower', async () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('records an event and sends a job for a new follower', async () => {
     await service.notifyNewFollower({ actorId, recipientId });
 
-    expect(eventModel.create).toHaveBeenCalledWith(
-      expect.objectContaining({ type: NotificationEventType.NEW_FOLLOWER }),
-    );
-    expect(pushService.sendPush).toHaveBeenCalledTimes(1);
+    expect(events.recordIfNew).toHaveBeenCalledWith({
+      type: NotificationEventType.NEW_FOLLOWER,
+      actorId,
+      recipientId,
+    });
+    expect(sender.send).toHaveBeenCalledWith({
+      recipientId,
+      type: 'newFollower',
+      actorId,
+      reelId: undefined,
+    });
   });
 
-  it('never notifies on a self-action (like your own reel)', async () => {
-    await service.notifyReelLike({
-      actorId: recipientId,
+  it('sends a like with the reel id', async () => {
+    await service.notifyReelLike({ actorId, recipientId, reelId });
+    expect(sender.send).toHaveBeenCalledWith({
       recipientId,
+      type: 'reelLike',
+      actorId,
       reelId,
     });
-
-    expect(eventModel.create).not.toHaveBeenCalled();
-    expect(pushService.sendPush).not.toHaveBeenCalled();
   });
 
-  it('skips the push (but still attempted the write) when the event already exists (duplicate-key dedup)', async () => {
-    eventModel.create.mockRejectedValue(
-      Object.assign(new Error('E11000 duplicate key'), { code: 11000 }),
-    );
+  it('carries ids only, never a name or any text (FR-073a)', async () => {
+    await service.notifyReelLike({ actorId, recipientId, reelId });
+    const [job] = sender.send.mock.calls[0] as [Record<string, unknown>];
+    expect(Object.keys(job).sort()).toEqual([
+      'actorId',
+      'recipientId',
+      'reelId',
+      'type',
+    ]);
+  });
+
+  it('never notifies on a self-action', async () => {
+    await service.notifyReelLike({ actorId: recipientId, recipientId, reelId });
+    await service.notifyNewFollower({ actorId: recipientId, recipientId });
+
+    expect(events.recordIfNew).not.toHaveBeenCalled();
+    expect(sender.send).not.toHaveBeenCalled();
+  });
+
+  it('does not send when the event already exists (unlike then like again)', async () => {
+    events.recordIfNew.mockResolvedValue(false);
 
     await service.notifyReelLike({ actorId, recipientId, reelId });
 
-    expect(eventModel.create).toHaveBeenCalledTimes(1);
-    expect(pushService.sendPush).not.toHaveBeenCalled();
+    expect(events.recordIfNew).toHaveBeenCalledTimes(1);
+    expect(sender.send).not.toHaveBeenCalled();
   });
 
-  it('does not push when the recipient has no device tokens, but the event is still recorded', async () => {
-    deviceTokens.getTokens.mockResolvedValue([]);
+  it('records the event before it sends', async () => {
+    const order: string[] = [];
+    events.recordIfNew.mockImplementation(() => {
+      order.push('record');
+      return Promise.resolve(true);
+    });
+    sender.send.mockImplementation(() => {
+      order.push('send');
+      return Promise.resolve();
+    });
 
     await service.notifyReelLike({ actorId, recipientId, reelId });
 
-    expect(eventModel.create).toHaveBeenCalledTimes(1);
-    expect(pushService.sendPush).not.toHaveBeenCalled();
+    expect(order).toEqual(['record', 'send']);
   });
 
-  it('notifyMentions skips self-mentions and notifies only resolved others', async () => {
+  it('notifyMentions skips self-mentions and notifies only the others', async () => {
     await service.notifyMentions({
       actorId,
       reelId,
@@ -100,10 +108,62 @@ describe('ReelsNotificationsService', () => {
       ],
     });
 
-    expect(eventModel.create).toHaveBeenCalledTimes(1);
-    expect(eventModel.create).toHaveBeenCalledWith(
-      expect.objectContaining({ type: NotificationEventType.REEL_MENTION }),
+    expect(events.recordIfNew).toHaveBeenCalledTimes(1);
+    expect(events.recordIfNew).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: NotificationEventType.REEL_MENTION,
+        recipientId,
+      }),
     );
-    expect(pushService.sendPush).toHaveBeenCalledTimes(1);
+    expect(sender.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('a rejected reel notifies its owner with no actor, and the self-skip does not apply', async () => {
+    await service.notifyReelRejected({ recipientId: actorId, reelId });
+
+    expect(events.recordIfNew).toHaveBeenCalledWith({
+      type: NotificationEventType.REEL_REJECTED,
+      actorId: null,
+      recipientId: actorId,
+      reelId,
+    });
+    expect(sender.send).toHaveBeenCalledWith({
+      recipientId: actorId,
+      type: 'reelRejected',
+      actorId: undefined,
+      reelId,
+    });
+  });
+
+  describe('a failure never reaches the caller (FR-066)', () => {
+    it('when delivery fails', async () => {
+      sender.send.mockRejectedValue(new Error('queue down'));
+      await expect(
+        service.notifyReelLike({ actorId, recipientId, reelId }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('when recording the event fails', async () => {
+      events.recordIfNew.mockRejectedValue(new Error('db down'));
+      await expect(
+        service.notifyNewFollower({ actorId, recipientId }),
+      ).resolves.toBeUndefined();
+      expect(sender.send).not.toHaveBeenCalled();
+    });
+
+    it('and one failed mention does not stop the rest', async () => {
+      events.recordIfNew
+        .mockRejectedValueOnce(new Error('db down'))
+        .mockResolvedValue(true);
+      await service.notifyMentions({
+        actorId,
+        reelId,
+        mentions: [
+          { userId: 'a'.repeat(24), username: 'first' },
+          { userId: 'b'.repeat(24), username: 'second' },
+        ],
+      });
+      expect(sender.send).toHaveBeenCalledTimes(1);
+    });
   });
 });

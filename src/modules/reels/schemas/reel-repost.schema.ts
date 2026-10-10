@@ -6,9 +6,12 @@ export type ReelRepostDocument = ReelRepost & Document;
 // v4 (FR-073): a repost is a pure distribution relationship — no copy of the
 // reel is created, no public counter. At most one repost per (reel,
 // reposter); toggled the same relation-write-outcome way as likes/saves.
-@Schema({ timestamps: { createdAt: true, updatedAt: false } })
+@Schema({
+  collection: 'reel_reposts',
+  timestamps: { createdAt: true, updatedAt: false },
+})
 export class ReelRepost {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'ReelsAccount', required: true })
   reposterId: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, ref: 'Reel', required: true })

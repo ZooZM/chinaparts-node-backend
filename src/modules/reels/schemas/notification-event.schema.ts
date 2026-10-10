@@ -17,15 +17,23 @@ export enum NotificationEventType {
 // service layer for actor-driven types — a user's own actions on their own
 // content never notify. v3: `actorId` is optional/null for system-originated
 // events (`reelRejected`), which bypass the self-skip rule entirely.
-@Schema({ timestamps: { createdAt: true, updatedAt: false } })
+@Schema({
+  collection: 'notification_events',
+  timestamps: { createdAt: true, updatedAt: false },
+})
 export class NotificationEvent {
   @Prop({ type: String, enum: NotificationEventType, required: true })
   type: NotificationEventType;
 
-  @Prop({ type: Types.ObjectId, ref: 'User', required: false, default: null })
+  @Prop({
+    type: Types.ObjectId,
+    ref: 'ReelsAccount',
+    required: false,
+    default: null,
+  })
   actorId?: Types.ObjectId | null;
 
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'ReelsAccount', required: true })
   recipientId: Types.ObjectId;
 
   // Absent for `newFollower`; the liked/mentioned reel otherwise.

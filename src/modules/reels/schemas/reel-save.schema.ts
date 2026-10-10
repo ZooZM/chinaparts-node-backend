@@ -5,9 +5,12 @@ export type ReelSaveDocument = ReelSave & Document;
 
 // FR-049: saves are private — no public counter, no likesCount-style field
 // anywhere. This collection is the sole source of truth for "is this saved".
-@Schema({ timestamps: { createdAt: true, updatedAt: false } })
+@Schema({
+  collection: 'reel_saves',
+  timestamps: { createdAt: true, updatedAt: false },
+})
 export class ReelSave {
-  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'ReelsAccount', required: true })
   userId: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, ref: 'Reel', required: true })

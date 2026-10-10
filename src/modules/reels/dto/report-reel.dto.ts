@@ -1,14 +1,9 @@
-import {
-  IsEnum,
-  IsNotEmpty,
-  IsString,
-  MaxLength,
-  ValidateIf,
-} from 'class-validator';
+import { IsEnum, IsNotEmpty, IsString, ValidateIf } from 'class-validator';
 import { Transform } from 'class-transformer';
+import { MaxLengthFromConfig } from '../../../common/validation/max-length-from-config';
 import { ReelReportReason } from '../schemas/reel-report.schema';
 
-/** v4 (FR-069): `customReason` is required (non-empty, trimmed) iff `reason === 'other'`. */
+/** `customReason` is required (non-empty, trimmed) if and only if `reason` is `other` (FR-053). */
 export class ReportReelDto {
   @IsEnum(ReelReportReason)
   reason: ReelReportReason;
@@ -19,6 +14,6 @@ export class ReportReelDto {
   @ValidateIf((o: ReportReelDto) => o.reason === ReelReportReason.OTHER)
   @IsString()
   @IsNotEmpty()
-  @MaxLength(500)
+  @MaxLengthFromConfig('REEL_REPORT_REASON_MAX_LENGTH')
   customReason?: string;
 }
