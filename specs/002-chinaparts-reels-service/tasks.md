@@ -772,7 +772,7 @@ description: "Task list for the China Parts Reels Service"
   - the SC-004 and SC-010 latency reports (T106)
   - an SC-008 audit of every response and push type for email, phone, national ID, address, and payment data
   - the SC-011 device matrix: iPhone and Android, with the customer app, both apps, and neither, plus a desktop browser
-- [ ] T109 Run the final gates: `npm run build`, `npm run lint` (zero `any` and zero suppressed rules), `npm test`, and `npm run test:e2e`. Walk through every row of quickstart.md §5 against `docker-compose.local.yml`, and record any deviations in `docs/launch-gates.md`.
+- [X] T109 Run the final gates: `npm run build`, `npm run lint` (zero `any` and zero suppressed rules), `npm test`, and `npm run test:e2e`. Walk through every row of quickstart.md §5 against `docker-compose.local.yml`, and record any deviations in `docs/launch-gates.md`.
 
 ---
 

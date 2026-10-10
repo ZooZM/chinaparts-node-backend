@@ -90,10 +90,64 @@ Cover all of these, on iPhone and on Android, and a desktop browser:
 | Neither | Store listing of the customer app |
 | Desktop browser | A page offering both store links |
 
-## Deviations recorded at the final gates (T109)
+## Final gates (T109), run 2026-10-10
 
-The final run (`npm run build`, `npm run lint`, `npm test`, `npm run test:e2e`) and the walk through
-[quickstart.md §5](../specs/002-chinaparts-reels-service/quickstart.md) are recorded here, with
-anything that differed from the expected result.
+| Gate | Result |
+|------|--------|
+| `npm run build` | Passes |
+| `npm run lint` (`--max-warnings=0`, zero `any`, zero suppressed rules) | Passes |
+| `npx tsc --noEmit` | Passes |
+| `npm test` | 60 suites, 940 tests pass |
+| `npm run test:e2e` | 20 suites, 548 tests pass |
 
-_To be filled in by the final-gates step._
+### What differs from the plan
+
+These are the places where what was run is not what [quickstart.md](../specs/002-chinaparts-reels-service/quickstart.md)
+describes. None changes a requirement, but each one is a thing to prove on staging before launch.
+
+1. **The Docker stack was never started.** There was no Docker daemon in the environment that built
+   this. `Dockerfile`, `docker-compose.yml` and `docker-compose.local.yml` are written but have
+   **not been built or run**, and the GitHub workflows have never executed. First deploy to staging is
+   the first time they are exercised: expect to fix small things there (a missing package in the image,
+   a healthcheck, a path).
+2. **Quickstart §5 was not walked by hand with `curl` against `docker-compose.local.yml`.** Every row
+   is covered by an automated end-to-end test instead, which drives the real app over HTTP against a
+   real MySQL 8.4, Redis and MongoDB (replica set, with transactions), started as plain processes
+   rather than containers. The rows and the tests that cover them:
+
+   | Quickstart row | Covered by |
+   |----------------|-----------|
+   | US1: guest feed, bad token 401, admin key 401, customer 1 vs seller 1 | `auth`, `guest`, `identity-collision` |
+   | US2: upload, `pending_moderation` to `published`, sellers only, suspended | `upload`, `moderation`, `standing` |
+   | US3: like, comment, delete comment | `engagement`, `reels-regression` |
+   | US4: product cards, deactivated product, currency per viewer | `products` |
+   | US5: follow and Following feed | `profiles`, `feed` |
+   | US6: Arabic-aware search | `search` |
+   | US7: comment reports, auto-hide threshold, admin review | `moderation` |
+   | US8: reposts in For You | `reposts` |
+   | US9: push to the right device only | `notifications` |
+   | US10: `assetlinks.json`, store page, unsafe id 404 | `links` |
+   | FR-009 and FR-008: suspension hides and restores, owner may still delete | `standing` |
+   | Health | `guards` (200), `health.controller.spec.ts` (503 `NOT_READY`) |
+
+3. **Real object storage was not exercised.** The end-to-end suite uses the local-disk storage driver.
+   The S3 driver has unit tests with a stand-in client (`s3.driver.spec.ts`) but has never talked to
+   MinIO or the Saudi bucket. Check on staging: an upload ends up in the private bucket, publishing
+   copies it to the public one, suspending removes the public copy, and the public URL plays.
+4. **Real Firebase was not exercised.** Notifications are tested with a stand-in that records what
+   would be sent. Check on staging with the real credentials for both apps (G3 point 5).
+5. **The screening provider is the stub.** `MODERATION_PROVIDER=stub` everywhere until G1 is done.
+6. **`/health/ready` returning 503 with MySQL stopped** is covered by the unit test only. Stopping the
+   throwaway MySQL in the middle of the end-to-end suite would break every test after it, so this one is
+   worth doing by hand on staging: stop the read replica's route and check the 503 and the 503
+   `UPSTREAM_UNAVAILABLE` for a signed-in request.
+7. **The standing sync is triggered directly in tests** instead of waiting for its schedule. The
+   15-minute bound of SC-007 therefore rests on `ACCOUNT_SYNC_INTERVAL_MINUTES` (5 by default) plus the
+   media job that follows it. Confirm on staging: suspend a seller in China Parts and time how long
+   until the copied video link stops working, then reinstate and time the return.
+8. **The price conversion rule is provisional** until G2f is answered.
+9. **`<` in JSON text is stored as `&lt;`.** The input sanitiser (`xss-clean`) encodes `<` in JSON
+   bodies and query strings, such as comments and report reasons, so a comment reading "price < 100" is
+   stored escaped. Upload descriptions are multipart, so they are not touched by it and are escaped where
+   they are rendered instead. This is the safe side of the trade-off; the product owner should decide
+   whether it is acceptable.
