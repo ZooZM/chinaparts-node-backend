@@ -87,6 +87,7 @@ function setup() {
     toggleFollow: fn(),
     recordView: fn(),
     recordGuestView: fn(),
+    recordProductTap: fn(),
     toggleSave: fn(),
     deleteReelCascade: fn(),
     reportReel: fn(),
@@ -823,6 +824,84 @@ describe('ReelsService', () => {
         service.getReposters({ user: me }, reelId, {}),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
+  });
+
+  describe('product taps (FR-038)', () => {
+    it('records a tap for a signed-in viewer, with the exclusion set, and answers null', async () => {
+      const { service, repository, standing } = setup();
+      standing.members.mockResolvedValue(new Set(['suspended']));
+      repository.recordProductTap.mockResolvedValue('recorded');
+
+      await expect(
+        service.recordProductTap({ user: me }, reelId, '101'),
+      ).resolves.toBeNull();
+
+      expect(repository.recordProductTap).toHaveBeenCalledWith({
+        reelId,
+        productId: 101,
+        viewerId: me.userId,
+        installationId: undefined,
+        excludeCreatorIds: ['suspended'],
+      });
+    });
+
+    it('records a signed-out tap with the installation id', async () => {
+      const { service, repository } = setup();
+      repository.recordProductTap.mockResolvedValue('recorded');
+
+      await service.recordProductTap(
+        { installationId: 'inst-1' },
+        reelId,
+        '101',
+      );
+
+      expect(repository.recordProductTap).toHaveBeenCalledWith(
+        expect.objectContaining({ viewerId: '', installationId: 'inst-1' }),
+      );
+    });
+
+    it('is PRODUCT_LINK_NOT_FOUND for a product the reel does not link', async () => {
+      const { service, repository } = setup();
+      repository.recordProductTap.mockResolvedValue('not_linked');
+
+      const error = await service
+        .recordProductTap({ user: me }, reelId, '103')
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(NotFoundException);
+      expect((error as NotFoundException).getResponse()).toMatchObject({
+        error: 'PRODUCT_LINK_NOT_FOUND',
+      });
+    });
+
+    it('is REEL_NOT_FOUND for a reel the viewer cannot see', async () => {
+      const { service, repository } = setup();
+      repository.recordProductTap.mockResolvedValue(null);
+
+      const error = await service
+        .recordProductTap({ user: me }, reelId, '101')
+        .catch((e: unknown) => e);
+
+      expect((error as NotFoundException).getResponse()).toMatchObject({
+        error: 'REEL_NOT_FOUND',
+      });
+    });
+
+    it.each(['abc', '0', '-5', '1.5', ''])(
+      'is PRODUCT_LINK_NOT_FOUND for a product id that is %p, without asking the repository',
+      async (productId) => {
+        const { service, repository } = setup();
+
+        const error = await service
+          .recordProductTap({ user: me }, reelId, productId)
+          .catch((e: unknown) => e);
+
+        expect((error as NotFoundException).getResponse()).toMatchObject({
+          error: 'PRODUCT_LINK_NOT_FOUND',
+        });
+        expect(repository.recordProductTap).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe('comments', () => {

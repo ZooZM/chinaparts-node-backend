@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Post,
+  Put,
   Query,
   UploadedFiles,
   UseInterceptors,
@@ -29,8 +30,10 @@ import {
   FollowingUsersQueryDto,
 } from './dto/feed-query.dto';
 import { ReportReelDto } from './dto/report-reel.dto';
+import { SetProductsDto } from './dto/set-products.dto';
 import { SearchQueryDto } from './dto/search-query.dto';
 import { ReelUploadService } from './media/reel-upload.service';
+import { ProductLinksService } from './products/product-links.service';
 import { ReelsService } from './reels.service';
 import type {
   CommentDto,
@@ -58,6 +61,7 @@ export class ReelsController {
     private readonly reelsService: ReelsService,
     private readonly uploadService: ReelUploadService,
     private readonly commentsService: CommentsService,
+    private readonly productLinks: ProductLinksService,
   ) {}
 
   @Get('liked')
@@ -168,6 +172,18 @@ export class ReelsController {
     return this.reelsService.getReel(viewer, id);
   }
 
+  // Replaces the products shown under the reel. Owner only, and only products the seller owns.
+  @Put(':id/products')
+  @Access('seller')
+  async setProducts(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: SetProductsDto,
+  ): Promise<ReelDto> {
+    await this.productLinks.setLinks(id, user, dto.productIds);
+    return this.reelsService.getReel({ user }, id);
+  }
+
   @Post(':id/like')
   @Access('signed-in')
   toggleLike(
@@ -233,6 +249,17 @@ export class ReelsController {
     @Param('id') id: string,
   ): Promise<{ viewsCount: number }> {
     return this.reelsService.recordView(viewer, id);
+  }
+
+  // Signed in or out. A signed-in account out of good standing is refused like any other write.
+  @Post(':id/products/:productId/tap')
+  @Access('optional')
+  recordProductTap(
+    @Viewer() viewer: ViewerContext,
+    @Param('id') id: string,
+    @Param('productId') productId: string,
+  ): Promise<null> {
+    return this.reelsService.recordProductTap(viewer, id, productId);
   }
 
   @Post(':id/save')

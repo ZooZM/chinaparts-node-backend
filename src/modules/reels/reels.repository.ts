@@ -44,6 +44,28 @@ export interface Page<T> {
 
 // ── Reels ───────────────────────────────────────────────────────────────────────────────────
 
+/** The links as stored. A card is built from each one that is still available (FR-037). */
+export interface ProductLinkRecord {
+  productId: number;
+  position: number;
+}
+
+/**
+ * A product card (FR-036). Prices are decimal strings, in `currency`, which is the viewer's
+ * preferred currency, or the base currency when there is no rate for it.
+ */
+export interface ProductCardDto {
+  productId: number;
+  slug: string;
+  name: string;
+  imageUrl: string | null;
+  price: string;
+  discountPercentage: string;
+  finalPrice: string;
+  currency: string;
+  available: boolean;
+}
+
 export interface ReelRecord {
   id: string;
   media: ReelMediaRecord;
@@ -74,12 +96,21 @@ export interface ReelRecord {
   topReposters: AccountSummary[];
   // True whenever the caller (not just a followee) has reposted this reel.
   viewerReposted: boolean;
+  // Internal, turned into `products` by the presenter and never sent: the links in order, and the
+  // creator's China Parts id, which says whose products they must be.
+  productLinks: ProductLinkRecord[];
+  creatorExternalId: number;
 }
 
-/** The response shape: a record with its keys turned into URLs for this viewer. */
-export interface ReelDto extends Omit<ReelRecord, 'media'> {
+/** The response shape: a record with its keys turned into URLs and its links into cards. */
+export interface ReelDto extends Omit<
+  ReelRecord,
+  'media' | 'productLinks' | 'creatorExternalId'
+> {
   videoUrl: string;
   thumbnailUrl: string;
+  /** Ordered by position. A link whose product is unavailable is left out (FR-037). */
+  products: ProductCardDto[];
 }
 
 /** Everything a status or standing side effect needs to know about a reel. */
@@ -201,6 +232,8 @@ export interface ReelsRepository {
     hashtags: string[];
     hashtagsNormalized: string[];
     mentions: ReelMentionRecord[];
+    /** Already validated as attachable, in the order given. */
+    productIds?: number[];
   }): Promise<ReelRecord>;
 
   /**
@@ -256,6 +289,25 @@ export interface ReelsRepository {
     id: string,
     viewerId: string,
   ): Promise<{ sharesCount: number } | null>;
+
+  /**
+   * Replaces a reel's product links with `productIds`, in that order, keeping the tap total of a
+   * product that stays linked. The caller has checked ownership and that the products may be
+   * attached.
+   */
+  setProductLinks(reelId: string, productIds: number[]): Promise<void>;
+
+  /**
+   * Records a tap on a product card: an event row, and one more on the link's total. `not_linked`
+   * means the reel does not link that product; null means no such reel is visible to the viewer.
+   */
+  recordProductTap(params: {
+    reelId: string;
+    productId: number;
+    viewerId: string;
+    installationId?: string;
+    excludeCreatorIds: string[];
+  }): Promise<'recorded' | 'not_linked' | null>;
 
   /** Moves a reel's stored comment count, never below zero. The counter follows the relation write. */
   adjustCommentsCount(id: string, delta: number): Promise<void>;

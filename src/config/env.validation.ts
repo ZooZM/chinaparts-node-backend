@@ -111,7 +111,8 @@ export const envValidationSchema = Joi.object({
   FEED_PAGE_SIZE_MAX: positiveInt(25),
   COMMENTS_PAGE_SIZE_DEFAULT: positiveInt(20),
   COMMENTS_PAGE_SIZE_MAX: positiveInt(50),
-  REEL_MAX_PRODUCTS: positiveInt(5),
+  // The stored ceiling is 5 links per reel (data-model.md), so the setting can lower it, not raise it.
+  REEL_MAX_PRODUCTS: Joi.number().integer().min(1).max(5).default(5),
   REEL_REPORT_DAILY_LIMIT: positiveInt(20),
   REEL_REPORT_AUTOHIDE_THRESHOLD: positiveInt(25),
 

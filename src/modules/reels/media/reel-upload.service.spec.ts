@@ -8,6 +8,7 @@ import type { AuthenticatedUser } from '../../../common/http/viewer-request';
 import { StorageService } from '../../../common/storage/storage.service';
 import { AccountsService } from '../../accounts/accounts.service';
 import { ReelPresenter } from '../presentation/reel-presenter.service';
+import type { ProductLinksService } from '../products/product-links.service';
 import type { ReelDto, ReelRecord, ReelsRepository } from '../reels.repository';
 import { ReelUploadService } from './reel-upload.service';
 
@@ -94,6 +95,11 @@ describe('ReelUploadService (FR-025 to FR-033)', () => {
         } as ReelDto),
       ),
     };
+    const productLinks = {
+      validateAttachable: jest.fn((_seller: number, ids: number[]) =>
+        Promise.resolve([...new Set(ids)]),
+      ),
+    };
     const queue = { add: jest.fn().mockResolvedValue(undefined) };
     const limits = { maxDurationSeconds: overrides.maxDurationSeconds ?? 60 };
 
@@ -103,9 +109,19 @@ describe('ReelUploadService (FR-025 to FR-033)', () => {
       accounts as unknown as AccountsService,
       limits as LimitsService,
       presenter as unknown as ReelPresenter,
+      productLinks as unknown as ProductLinksService,
       queue as unknown as Queue,
     );
-    return { service, storage, reels, accounts, presenter, queue, stored };
+    return {
+      service,
+      storage,
+      reels,
+      accounts,
+      presenter,
+      productLinks,
+      queue,
+      stored,
+    };
   }
 
   it('stores both files in the private bucket, then creates the reel, then queues screening', async () => {
@@ -143,6 +159,71 @@ describe('ReelUploadService (FR-025 to FR-033)', () => {
       expect.stringMatching(/^priv\/reels\/[0-9a-f]{24}\/thumb\.jpg$/),
       expect.stringMatching(/^priv\/reels\/[0-9a-f]{24}\/video\.mp4$/),
     ]);
+  });
+
+  describe('products (FR-035)', () => {
+    it('checks them for the seller before anything is stored, and links them in the order given', async () => {
+      const { service, storage, reels, productLinks } = setup();
+      const order: string[] = [];
+      productLinks.validateAttachable.mockImplementation(
+        (_seller: number, ids: number[]) => {
+          order.push('validate');
+          return Promise.resolve(ids);
+        },
+      );
+      storage.putFile.mockImplementation(() => {
+        order.push('store');
+        return Promise.resolve();
+      });
+
+      await service.upload(
+        seller,
+        { video: await staged(SAMPLE_10S, 'v.mp4', 'video/mp4') },
+        { productIds: [102, 101] },
+      );
+
+      expect(productLinks.validateAttachable).toHaveBeenCalledWith(
+        1,
+        [102, 101],
+      );
+      expect(order[0]).toBe('validate');
+      expect(reels.createReel).toHaveBeenCalledWith(
+        expect.objectContaining({ productIds: [102, 101] }),
+      );
+    });
+
+    it('refuses the whole upload when a product may not be attached, storing and creating nothing', async () => {
+      const { service, storage, reels, productLinks } = setup();
+      productLinks.validateAttachable.mockRejectedValue(
+        new BadRequestException({ error: 'PRODUCT_NOT_ATTACHABLE' }),
+      );
+      const video = await staged(SAMPLE_10S, 'v.mp4', 'video/mp4');
+
+      const error = await errorOf(
+        service.upload(seller, { video }, { productIds: [201] }),
+      );
+
+      expect(error).toBeInstanceOf(BadRequestException);
+      expect(storage.putFile).not.toHaveBeenCalled();
+      expect(reels.createReel).not.toHaveBeenCalled();
+      // The temp file goes too.
+      expect(await readdir(workDir)).toEqual([]);
+    });
+
+    it('does not ask China Parts anything when no products are given', async () => {
+      const { service, reels, productLinks } = setup();
+
+      await service.upload(
+        seller,
+        { video: await staged(SAMPLE_10S, 'v.mp4', 'video/mp4') },
+        {},
+      );
+
+      expect(productLinks.validateAttachable).not.toHaveBeenCalled();
+      expect(reels.createReel).toHaveBeenCalledWith(
+        expect.objectContaining({ productIds: [] }),
+      );
+    });
   });
 
   it('puts the reel id in the object keys and creates the document with them', async () => {

@@ -20,6 +20,7 @@ import {
   MODERATION_JOB_OPTIONS,
 } from '../moderation/moderation-job';
 import { ReelPresenter } from '../presentation/reel-presenter.service';
+import { ProductLinksService } from '../products/product-links.service';
 import { parseHashtagsAndMentions } from '../reels-text.util';
 import { REELS_REPOSITORY } from '../reels.repository';
 import type { ReelDto, ReelsRepository } from '../reels.repository';
@@ -62,7 +63,8 @@ interface StoredFile {
 /**
  * Publishing a reel (FR-025 to FR-033). The order is the whole point:
  *
- * 1. Validate the video and prepare the files (duration check, faststart remux, cover image).
+ * 1. Validate the video and the products, and prepare the files (duration check, product check,
+ *    faststart remux, cover image).
  * 2. Store both files in the PRIVATE bucket.
  * 3. Only then create the reel document, as `pending_moderation`.
  * 4. Queue screening. A queue failure never fails the upload: the sweep picks the reel up.
@@ -81,6 +83,7 @@ export class ReelUploadService {
     private readonly accounts: AccountsService,
     private readonly limits: LimitsService,
     private readonly presenter: ReelPresenter,
+    private readonly productLinks: ProductLinksService,
     @InjectQueue(QUEUE_REELS_MODERATION)
     private readonly moderationQueue: Queue,
   ) {}
@@ -107,6 +110,13 @@ export class ReelUploadService {
         });
       }
       await this.assertWithinDurationLimit(files.video.path);
+      // Before anything is stored: a product that may not be attached refuses the whole upload.
+      const productIds = dto.productIds?.length
+        ? await this.productLinks.validateAttachable(
+            user.externalId,
+            dto.productIds,
+          )
+        : [];
 
       const video = await this.prepareVideo(files.video, tempFiles);
       const thumbnail = await this.prepareThumbnail(
@@ -140,6 +150,7 @@ export class ReelUploadService {
         parsed,
         videoKey,
         thumbnailKey,
+        productIds,
       );
       await this.enqueueScreening(record.id);
       return await this.presenter.presentOne(record, { user });
@@ -235,6 +246,7 @@ export class ReelUploadService {
     parsed: Awaited<ReturnType<typeof parseHashtagsAndMentions>>,
     videoKey: string,
     thumbnailKey: string,
+    productIds: number[],
   ) {
     try {
       return await this.reels.createReel({
@@ -246,6 +258,7 @@ export class ReelUploadService {
         hashtags: parsed.hashtags,
         hashtagsNormalized: parsed.hashtagsNormalized,
         mentions: parsed.mentions,
+        productIds,
       });
     } catch (error) {
       // No document, so no files either (FR-033).

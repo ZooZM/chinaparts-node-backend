@@ -2,12 +2,14 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChinaPartsAccountsRepository } from './chinaparts-accounts.repository';
 import { ChinaPartsConfig } from './china-parts.config';
+import { ChinaPartsExchangeRatesRepository } from './exchange-rates.repository';
 import { ChinaPartsMediaRepository } from './media.repository';
 import {
   CHINAPARTS_POOL,
   ChinaPartsDb,
   createChinaPartsPool,
 } from './mysql.provider';
+import { ChinaPartsProductsRepository } from './products.repository';
 import { TokensRepository } from './tokens.repository';
 
 /**
@@ -26,6 +28,8 @@ import { TokensRepository } from './tokens.repository';
     ChinaPartsMediaRepository,
     TokensRepository,
     ChinaPartsAccountsRepository,
+    ChinaPartsProductsRepository,
+    ChinaPartsExchangeRatesRepository,
   ],
   exports: [
     ChinaPartsDb,
@@ -33,6 +37,8 @@ import { TokensRepository } from './tokens.repository';
     TokensRepository,
     ChinaPartsAccountsRepository,
     ChinaPartsMediaRepository,
+    ChinaPartsProductsRepository,
+    ChinaPartsExchangeRatesRepository,
   ],
 })
 export class ChinaPartsModule {}

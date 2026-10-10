@@ -462,7 +462,7 @@ description: "Task list for the China Parts Reels Service"
 
 ### Tests for User Story 4 ⚠️
 
-- [ ] T066 [P] [US4] Write `test/e2e/products.e2e-spec.ts`.
+- [X] T066 [P] [US4] Write `test/e2e/products.e2e-spec.ts`.
   - **Attaching**: attaching 101 and 102 works.
   - **Refused**:
     - products 103, 104, and 201: `400 PRODUCT_NOT_ATTACHABLE` listing the ids
@@ -481,30 +481,30 @@ description: "Task list for the China Parts Reels Service"
 
 ### Implementation for User Story 4
 
-- [ ] T067 [P] [US4] Implement `src/modules/china-parts/products.repository.ts`: `findAttachable(sellerExternalId, ids)` and `getCardRows(ids)`. Use exactly the "Attachable products" and "Product cards" queries in contracts/chinaparts-read-model.md, plus the first image per product from `media` (`CHINAPARTS_PRODUCT_TYPES`, `CHINAPARTS_PRODUCT_IMAGE_COLLECTION`, lowest `order_column`). Add `products.repository.spec.ts`.
-- [ ] T068 [P] [US4] Implement `src/modules/china-parts/exchange-rates.repository.ts`: `getRates(): Promise<Map<string, string>>` runs the "Exchange rates" query in contracts/chinaparts-read-model.md with the validated, backtick-quoted identifiers from `china-parts.config.ts`. Add `exchange-rates.repository.spec.ts`, asserting the quoting and that no `SELECT *` is issued.
-- [ ] T069 [US4] Add `productLinks: [{ productId: number, position: number, tapsCount: number }]` to `src/modules/reels/schemas/reel.schema.ts`, with validators for at most 5 entries and a unique `productId` (data-model.md "reels").
-- [ ] T070 [US4] Implement `src/modules/reels/products/product-links.service.ts` per R11.
+- [X] T067 [P] [US4] Implement `src/modules/china-parts/products.repository.ts`: `findAttachable(sellerExternalId, ids)` and `getCardRows(ids)`. Use exactly the "Attachable products" and "Product cards" queries in contracts/chinaparts-read-model.md, plus the first image per product from `media` (`CHINAPARTS_PRODUCT_TYPES`, `CHINAPARTS_PRODUCT_IMAGE_COLLECTION`, lowest `order_column`). Add `products.repository.spec.ts`.
+- [X] T068 [P] [US4] Implement `src/modules/china-parts/exchange-rates.repository.ts`: `getRates(): Promise<Map<string, string>>` runs the "Exchange rates" query in contracts/chinaparts-read-model.md with the validated, backtick-quoted identifiers from `china-parts.config.ts`. Add `exchange-rates.repository.spec.ts`, asserting the quoting and that no `SELECT *` is issued.
+- [X] T069 [US4] Add `productLinks: [{ productId: number, position: number, tapsCount: number }]` to `src/modules/reels/schemas/reel.schema.ts`, with validators for at most 5 entries and a unique `productId` (data-model.md "reels").
+- [X] T070 [US4] Implement `src/modules/reels/products/product-links.service.ts` per R11.
   - **`validateAttachable(sellerExternalId, productIds)`**: rejects more than `REEL_MAX_PRODUCTS` with `TOO_MANY_PRODUCTS`, and any non-attachable id with `PRODUCT_NOT_ATTACHABLE`.
   - **`setLinks(reelId, ownerId, productIds)`**: owner only (`403 NOT_REEL_OWNER`).
   - **`getCards(productIds, sellerExternalIds)`**: uses the Redis `product:card:{id}` cache in the base currency, with TTL `PRODUCT_CARD_CACHE_SECONDS`. It leaves out inactive, deleted, or other-seller products. Prices are decimal strings. When China Parts is unreachable, it returns only the cached cards and logs a warning, while `validateAttachable` still throws `503 UPSTREAM_UNAVAILABLE` (R11).
   - **Tests**: `product-links.service.spec.ts`.
-- [ ] T071 [US4] Implement `src/modules/reels/products/price-conversion.service.ts` per R11.
+- [X] T071 [US4] Implement `src/modules/reels/products/price-conversion.service.ts` per R11.
   - **`convert(cards, viewerCurrency | null)`**: reads rates through `ExchangeRatesRepository`, cached in Redis `fx:rates` for `FX_CACHE_SECONDS`, and applies `CHINAPARTS_FX_RATE_DIRECTION`.
   - **Order of operations**: convert the base price, apply the discount, then round half-up to 2 decimals. Use scaled integer arithmetic (`BigInt` at 10^6), never floating point. `discountPercentage` is not converted.
   - **Fallback**: a missing rate, a null currency, or `UPSTREAM_UNAVAILABLE` returns base-currency cards and logs a warning.
   - **Provisional rule**: the order and rounding stay provisional until the China Parts checklist confirms them (R11). T108 blocks launch on that item.
   - **Tests**: `price-conversion.service.spec.ts` covering both directions, rounding at the half, the missing-rate fallback, and an upstream failure.
-- [ ] T072 [US4] Accept products on upload and add the edit endpoint in `src/modules/reels/reels.controller.ts`.
+- [X] T072 [US4] Accept products on upload and add the edit endpoint in `src/modules/reels/reels.controller.ts`.
   - **Upload**: add optional `productIds` to `src/modules/reels/dto/create-reel.dto.ts`, accepting a JSON array or a comma-separated string transformed to `number[]`. Validate it before any storage write in `reel-upload.service.ts`, and update `reel-upload.service.spec.ts`.
   - **Edit endpoint**: create `src/modules/reels/dto/set-products.dto.ts` (`productIds: number[]`, 0 to 5) and add EP11, `PUT /api/reels/:id/products`, which is `@Access('seller')`.
-- [ ] T073 [US4] Extend `src/modules/reels/presentation/reel-presenter.service.ts`.
+- [X] T073 [US4] Extend `src/modules/reels/presentation/reel-presenter.service.ts`.
   - **Collect**: gather every reel's `productLinks` on the page.
   - **Never fail the read**: if cards can't be built, the page still returns, with whatever cards `getCards` had cached (R11).
   - **Build**: call `ProductLinksService.getCards` once and `PriceConversionService.convert` once, with `viewer.user?.preferredCurrency ?? null`.
   - **Attach**: add `products: ProductCardDto[]` ordered by `position`, and add `ProductCardDto` to `src/modules/reels/reels.repository.ts` (contracts/rest-api.md).
   - **Tests**: update `reel-presenter.service.spec.ts`.
-- [ ] T074 [US4] Add the tap schema `src/modules/reels/schemas/reel-product-tap.schema.ts` and its endpoint in `src/modules/reels/reels.controller.ts`.
+- [X] T074 [US4] Add the tap schema `src/modules/reels/schemas/reel-product-tap.schema.ts` and its endpoint in `src/modules/reels/reels.controller.ts`.
   - **Schema**: `src/modules/reels/schemas/reel-product-tap.schema.ts` (data-model.md "reel_product_taps", with a 365-day TTL index), registered in the module.
   - **Endpoint**: EP12, `POST /api/reels/:id/products/:productId/tap`, is `@Access('optional')`. It returns `404 PRODUCT_LINK_NOT_FOUND` unless `productId` is in the reel's `productLinks`. A new repository method inserts the tap and runs `$inc productLinks.$.tapsCount`.
   - **Cascade**: add `reel_product_taps` to `deleteReelCascade`.

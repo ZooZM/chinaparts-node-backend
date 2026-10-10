@@ -352,6 +352,37 @@ export class ReelsService {
     return result;
   }
 
+  /**
+   * A tap on a product card (FR-038), signed in or out. The product must be one the reel links;
+   * whether it is still available is not asked, because the tap is on a card that was shown.
+   */
+  async recordProductTap(
+    viewer: ViewerContext,
+    reelId: string,
+    productId: string,
+  ): Promise<null> {
+    const id = /^\d+$/.test(productId) ? Number(productId) : 0;
+    const viewerId = this.idOf(viewer);
+    const result =
+      id > 0
+        ? await this.repository.recordProductTap({
+            reelId,
+            productId: id,
+            viewerId,
+            installationId: viewer.installationId,
+            excludeCreatorIds: await this.exclusionSet(viewerId),
+          })
+        : 'not_linked';
+    if (result === null) throw this.reelNotFound();
+    if (result === 'not_linked') {
+      throw new NotFoundException({
+        error: ErrorCode.PRODUCT_LINK_NOT_FOUND,
+        message: 'That product is not linked to this reel',
+      });
+    }
+    return null;
+  }
+
   /** A private toggle with no public counter (FR-041). */
   async toggleSave(
     user: AuthenticatedUser,

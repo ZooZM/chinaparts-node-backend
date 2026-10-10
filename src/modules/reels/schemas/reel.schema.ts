@@ -71,6 +71,27 @@ export class ModerationResult {
 export const ModerationResultSchema =
   SchemaFactory.createForClass(ModerationResult);
 
+/** A product shown under a reel (FR-035). `tapsCount` is the permanent total of taps (FR-038). */
+@Schema({ _id: false })
+export class ReelProductLink {
+  /** A China Parts `products.id`. */
+  @Prop({ type: Number, required: true })
+  productId: number;
+
+  /** 0 to 4, the order the seller gave. */
+  @Prop({ type: Number, required: true, min: 0, max: 4 })
+  position: number;
+
+  @Prop({ type: Number, default: 0 })
+  tapsCount: number;
+}
+
+export const ReelProductLinkSchema =
+  SchemaFactory.createForClass(ReelProductLink);
+
+/** The most products a reel can link: the stored ceiling, under the configurable `REEL_MAX_PRODUCTS`. */
+export const MAX_PRODUCT_LINKS = 5;
+
 @Schema({
   collection: 'reels',
   timestamps: { createdAt: true, updatedAt: true },
@@ -104,6 +125,26 @@ export class Reel {
   // Only @mentions that resolve to an existing account.
   @Prop({ type: [ReelMentionSchema], default: [] })
   mentions: ReelMention[];
+
+  // At most five, each product once. The links are stored even while a product is unavailable, so
+  // it comes back on the reel if it is reactivated (FR-037).
+  @Prop({
+    type: [ReelProductLinkSchema],
+    default: [],
+    validate: [
+      {
+        validator: (links: ReelProductLink[]) =>
+          links.length <= MAX_PRODUCT_LINKS,
+        message: `A reel links at most ${MAX_PRODUCT_LINKS} products`,
+      },
+      {
+        validator: (links: ReelProductLink[]) =>
+          new Set(links.map((link) => link.productId)).size === links.length,
+        message: 'A product can be linked to a reel only once',
+      },
+    ],
+  })
+  productLinks: ReelProductLink[];
 
   // Only `published` reels are visible to non-owners on any surface. The moderation worker is the
   // only writer of transitions out of `pending_moderation` (a guarded update).

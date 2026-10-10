@@ -24,6 +24,8 @@ import { MODERATION_PROVIDER } from './moderation/moderation-provider';
 import { SightengineModerationProvider } from './moderation/sightengine.provider';
 import { StubModerationProvider } from './moderation/stub.provider';
 import { NotificationEventsRepository } from './notification-events.repository';
+import { PriceConversionService } from './products/price-conversion.service';
+import { ProductLinksService } from './products/product-links.service';
 import { ReelPresenter } from './presentation/reel-presenter.service';
 import { ReelsAdminController } from './reels-admin.controller';
 import { ReelsDbRepository } from './reels-db.repository';
@@ -48,6 +50,10 @@ import {
 } from './schemas/reel-guest-view.schema';
 import { ReelLike, ReelLikeSchema } from './schemas/reel-like.schema';
 import { ReelReport, ReelReportSchema } from './schemas/reel-report.schema';
+import {
+  ReelProductTap,
+  ReelProductTapSchema,
+} from './schemas/reel-product-tap.schema';
 import { ReelRepost, ReelRepostSchema } from './schemas/reel-repost.schema';
 import { ReelSave, ReelSaveSchema } from './schemas/reel-save.schema';
 import { ReelShare, ReelShareSchema } from './schemas/reel-share.schema';
@@ -66,6 +72,7 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
       { name: ReelComment.name, schema: ReelCommentSchema },
       { name: ReelReport.name, schema: ReelReportSchema },
       { name: ReelRepost.name, schema: ReelRepostSchema },
+      { name: ReelProductTap.name, schema: ReelProductTapSchema },
       { name: Follow.name, schema: FollowSchema },
       { name: NotificationEvent.name, schema: NotificationEventSchema },
     ]),
@@ -97,6 +104,8 @@ import { Reel, ReelSchema } from './schemas/reel.schema';
     NotificationEventsRepository,
     CommentsRepository,
     CommentsService,
+    ProductLinksService,
+    PriceConversionService,
     ReelsNotificationsService,
     ReelsModerationService,
     ReelsModerationProcessor,

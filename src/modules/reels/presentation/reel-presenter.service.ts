@@ -1,11 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type { ViewerContext } from '../../../common/http/viewer-request';
 import { StorageService } from '../../../common/storage/storage.service';
 import { MediaUrlService } from '../media/media-url.service';
+import { PriceConversionService } from '../products/price-conversion.service';
+import { ProductLinksService } from '../products/product-links.service';
 import type {
   AdminHiddenReelDto,
   AdminHiddenReelRecord,
   CreatorProfileDto,
+  ProductCardDto,
   ProfileRecord,
   ReelDto,
   ReelMediaRecord,
@@ -19,22 +22,84 @@ import type {
  */
 @Injectable()
 export class ReelPresenter {
+  private readonly logger = new Logger(ReelPresenter.name);
+
   constructor(
     private readonly mediaUrls: MediaUrlService,
     private readonly storage: StorageService,
+    private readonly productLinks: ProductLinksService,
+    private readonly prices: PriceConversionService,
   ) {}
 
   async present(
     records: ReelRecord[],
     viewer: ViewerContext,
   ): Promise<ReelDto[]> {
+    const cards = await this.cardsFor(records, viewer);
     return Promise.all(
       records.map(async (record): Promise<ReelDto> => {
-        const { media, ...rest } = record;
+        // `productLinks` and `creatorExternalId` are for building the cards, and go no further.
+        const { media, productLinks, creatorExternalId, ...rest } = record;
+        void productLinks;
+        void creatorExternalId;
         const owner = viewer.user?.userId === record.creator.id;
-        return { ...rest, ...(await this.urls(media, owner)) };
+        return {
+          ...rest,
+          ...(await this.urls(media, owner)),
+          products: cards.get(record.id) ?? [],
+        };
       }),
     );
+  }
+
+  /**
+   * The product cards of a whole page of reels, with one lookup and one conversion however many
+   * reels there are (research R11). A reel read never fails because cards could not be built: the
+   * page is returned without them (FR-037).
+   */
+  private async cardsFor(
+    records: ReelRecord[],
+    viewer: ViewerContext,
+  ): Promise<Map<string, ProductCardDto[]>> {
+    const byReel = new Map<string, ProductCardDto[]>();
+    const requests = records.flatMap((record) =>
+      record.productLinks.map((link) => ({
+        productId: link.productId,
+        sellerExternalId: record.creatorExternalId,
+      })),
+    );
+    if (requests.length === 0) return byReel;
+
+    try {
+      const base = await this.productLinks.getCards(requests);
+      if (base.size === 0) return byReel;
+      const converted = await this.prices.convert(
+        [...base.values()],
+        viewer.user?.preferredCurrency ?? null,
+      );
+      const byProduct = new Map(
+        converted.map((card) => [card.productId, card]),
+      );
+
+      for (const record of records) {
+        const cards: ProductCardDto[] = [];
+        for (const link of record.productLinks) {
+          const card = byProduct.get(link.productId);
+          // A product is shown only on the reels of the seller it belongs to (FR-037).
+          if (
+            card &&
+            base.get(link.productId)?.sellerExternalId ===
+              record.creatorExternalId
+          ) {
+            cards.push(card);
+          }
+        }
+        byReel.set(record.id, cards);
+      }
+    } catch (error) {
+      this.logger.warn(`Product cards could not be built: ${String(error)}`);
+    }
+    return byReel;
   }
 
   async presentOne(

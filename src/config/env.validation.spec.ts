@@ -246,6 +246,11 @@ describe('environment schema (constitution IV)', () => {
 
   it('refuses a limit of zero or below, which would silently disable a feature', () => {
     expect(validate({ ...minimal, REEL_MAX_PRODUCTS: 0 }).error).toBeDefined();
+    // The stored ceiling is five links per reel.
+    expect(validate({ ...minimal, REEL_MAX_PRODUCTS: 6 }).error).toBeDefined();
+    expect(
+      validate({ ...minimal, REEL_MAX_PRODUCTS: 3 }).error,
+    ).toBeUndefined();
     expect(
       validate({ ...minimal, FEED_PAGE_SIZE_MAX: -5 }).error,
     ).toBeDefined();

@@ -23,6 +23,10 @@ export class FakeRedis {
     return Promise.resolve(entry.value);
   }
 
+  mget(...keys: string[]): Promise<Array<string | null>> {
+    return Promise.all(keys.map((key) => this.get(key)));
+  }
+
   set(
     key: string,
     value: string,

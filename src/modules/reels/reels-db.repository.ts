@@ -34,6 +34,10 @@ import {
   ReelGuestView,
   ReelGuestViewDocument,
 } from './schemas/reel-guest-view.schema';
+import {
+  ReelProductTap,
+  ReelProductTapDocument,
+} from './schemas/reel-product-tap.schema';
 import { ReelView, ReelViewDocument } from './schemas/reel-view.schema';
 import {
   Reel,
@@ -178,6 +182,8 @@ export class ReelsDbRepository implements ReelsRepository {
     private readonly reportModel: Model<ReelReportDocument>,
     @InjectModel(ReelRepost.name)
     private readonly repostModel: Model<ReelRepostDocument>,
+    @InjectModel(ReelProductTap.name)
+    private readonly productTapModel: Model<ReelProductTapDocument>,
     private readonly accounts: AccountsRepository,
   ) {}
 
@@ -213,6 +219,7 @@ export class ReelsDbRepository implements ReelsRepository {
         'username',
         'avatarUrl',
         'accountType',
+        'externalId',
       ]),
       viewerObjectId
         ? this.followModel
@@ -291,6 +298,13 @@ export class ReelsDbRepository implements ReelsRepository {
         repostersCount: 0,
         topReposters: [],
         viewerReposted: repostedSet.has(id),
+        productLinks: [...(r.productLinks ?? [])]
+          .sort((a, b) => a.position - b.position)
+          .map((link) => ({
+            productId: link.productId,
+            position: link.position,
+          })),
+        creatorExternalId: creator?.externalId ?? 0,
       };
     });
   }
@@ -389,6 +403,7 @@ export class ReelsDbRepository implements ReelsRepository {
     hashtags: string[];
     hashtagsNormalized: string[];
     mentions: { userId: string; username: string }[];
+    productIds?: number[];
   }): Promise<ReelRecord> {
     await this.reelModel.create({
       _id: new Types.ObjectId(params.id),
@@ -404,6 +419,11 @@ export class ReelsDbRepository implements ReelsRepository {
       mentions: params.mentions.map((m) => ({
         userId: new Types.ObjectId(m.userId),
         username: m.username,
+      })),
+      productLinks: (params.productIds ?? []).map((productId, position) => ({
+        productId,
+        position,
+        tapsCount: 0,
       })),
       status: ReelStatus.PENDING_MODERATION,
     });
@@ -871,6 +891,79 @@ export class ReelsDbRepository implements ReelsRepository {
       ),
       commentsCount: updated?.commentsCount ?? 0,
     };
+  }
+
+  async setProductLinks(reelId: string, productIds: number[]): Promise<void> {
+    const videoId = toObjectId(reelId);
+    if (!videoId) return;
+    const current = await this.reelModel
+      .findById(videoId)
+      .select({ productLinks: 1 })
+      .lean<{
+        productLinks?: Array<{ productId: number; tapsCount: number }>;
+      }>()
+      .exec();
+    // A product that stays linked keeps the taps it has earned (FR-038).
+    const taps = new Map(
+      (current?.productLinks ?? []).map((link) => [
+        link.productId,
+        link.tapsCount,
+      ]),
+    );
+    await this.reelModel
+      .updateOne(
+        { _id: videoId },
+        {
+          $set: {
+            productLinks: productIds.map((productId, position) => ({
+              productId,
+              position,
+              tapsCount: taps.get(productId) ?? 0,
+            })),
+          },
+        },
+      )
+      .exec();
+  }
+
+  async recordProductTap(params: {
+    reelId: string;
+    productId: number;
+    viewerId: string;
+    installationId?: string;
+    excludeCreatorIds: string[];
+  }): Promise<'recorded' | 'not_linked' | null> {
+    const videoId = toObjectId(params.reelId);
+    if (!videoId) return null;
+    const reel = await this.reelModel
+      .findOne({
+        _id: videoId,
+        status: ReelStatus.PUBLISHED,
+        ...this.excludeFilter(params.excludeCreatorIds),
+      })
+      .select({ productLinks: 1 })
+      .lean<{ productLinks?: Array<{ productId: number }> }>()
+      .exec();
+    if (!reel) return null;
+    if (
+      !(reel.productLinks ?? []).some((l) => l.productId === params.productId)
+    ) {
+      return 'not_linked';
+    }
+
+    await this.productTapModel.create({
+      videoId,
+      productId: params.productId,
+      viewerId: toObjectId(params.viewerId),
+      installationId: params.installationId ?? null,
+    });
+    await this.reelModel
+      .updateOne(
+        { _id: videoId, 'productLinks.productId': params.productId },
+        { $inc: { 'productLinks.$.tapsCount': 1 } },
+      )
+      .exec();
+    return 'recorded';
   }
 
   async adjustCommentsCount(id: string, delta: number): Promise<void> {
@@ -1507,6 +1600,7 @@ export class ReelsDbRepository implements ReelsRepository {
       this.commentModel.deleteMany({ videoId }).exec(),
       this.repostModel.deleteMany({ videoId }).exec(),
       this.reportModel.deleteMany({ videoId }).exec(),
+      this.productTapModel.deleteMany({ videoId }).exec(),
     ]);
     await this.notificationEventModel.deleteMany({ reelId: videoId }).exec();
     await this.reelModel.deleteOne({ _id: videoId }).exec();

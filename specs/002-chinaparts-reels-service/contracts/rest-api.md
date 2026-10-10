@@ -49,7 +49,7 @@ Out of good standing, any other write gets `403 ACCOUNT_NOT_IN_GOOD_STANDING`.
 | 8 | `POST /api/reels` (multipart) | Seller | Fields: `video` (required), `thumbnail`, `description`, `productIds` (**New**, a JSON array or comma-separated list, at most 5). Returns the `ReelDto` with status `pending_moderation` |
 | 9 | `GET /api/reels/:id` | Optional | Non-owners get 404 unless the reel is published and its creator is in good standing |
 | 10 | `DELETE /api/reels/:id` | Signed-in | Owner only, otherwise `403 NOT_REEL_OWNER`. Allowed out of good standing (FR-008) |
-| 11 | `PUT /api/reels/:id/products` | Seller | **New**. Body `{ "productIds": number[] }` (0 to 5) replaces the links. Owner only, otherwise `403 NOT_REEL_OWNER` |
+| 11 | `PUT /api/reels/:id/products` | Seller | **New**. Body `{ "productIds": number[] }` (0 to 5) replaces the links. Owner only, otherwise `403 NOT_REEL_OWNER`. Returns the updated `ReelDto`, with its `products`. A product listed twice counts once |
 | 12 | `POST /api/reels/:id/products/:productId/tap` | Optional | **New**. Records a tap and returns 204-equivalent `data: null`. A product not linked to the reel gets `404 PRODUCT_LINK_NOT_FOUND`. Signed-in callers need good standing |
 | 13 | `POST /api/reels/:id/like` | Signed-in | Toggle |
 | 14 | `POST /api/reels/:id/save` | Signed-in | Toggle |
@@ -188,8 +188,8 @@ Every error the service returns carries one of these (research R25).
 | 400 | `VALIDATION_FAILED` | A body, query, or path value fails validation. Examples: an empty or over-long comment, a whitespace-only search, `other` without a reason, and a signed-out EP5 request without `userId`. `message` lists the fields |
 | 400 | `INVALID_CURSOR` | A cursor the service didn't issue |
 | 400 | `VIDEO_REQUIRED`, `VIDEO_TOO_LONG`, `VIDEO_DURATION_UNREADABLE`, `UNSUPPORTED_MEDIA_TYPE` | Upload validation (FR-026) |
-| 400 | `PRODUCT_NOT_ATTACHABLE` | The product isn't the seller's own, or isn't active (FR-035). The response lists the offending `productIds` |
-| 400 | `TOO_MANY_PRODUCTS` | More than `REEL_MAX_PRODUCTS` |
+| 400 | `PRODUCT_NOT_ATTACHABLE` | The product isn't the seller's own, or isn't active (FR-035). The response lists the offending ids in `details.productIds` |
+| 400 | `TOO_MANY_PRODUCTS` | More than `REEL_MAX_PRODUCTS` (at most 5, the stored ceiling). `details.maxProducts` holds the limit |
 | 400 | `CANNOT_FOLLOW_SELF`, `CANNOT_BLOCK_SELF` | Following or blocking yourself (FR-045) |
 | 400 | `CANNOT_REPORT_OWN_REEL`, `CANNOT_REPORT_OWN_COMMENT`, `CANNOT_REPOST_OWN_REEL` | Ported rules, plus the new comment rule |
 | 401 | `AUTH_REQUIRED` | No session on a Signed-in or Seller route |
