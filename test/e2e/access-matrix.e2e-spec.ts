@@ -3,6 +3,8 @@ import { DiscoveryService, MetadataScanner } from '@nestjs/core';
 import { getModelToken } from '@nestjs/mongoose';
 import type { Model } from 'mongoose';
 import { Types } from 'mongoose';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { ACCESS_KEY } from '../../src/common/guards/access.decorator';
 import {
   ReelComment,
@@ -551,6 +553,55 @@ describe('Who may do what (e2e)', () => {
         .filter((route) => !covered.has(route));
 
       expect(missing).toEqual([]);
+    });
+
+    it('is in the Postman collection the front-end team uses: a request for every route, and none for a route that is gone', () => {
+      interface PostmanNode {
+        item?: PostmanNode[];
+        request?: { method: string; url: { path: string[] } };
+      }
+      const collection = JSON.parse(
+        readFileSync(
+          join(
+            __dirname,
+            '..',
+            '..',
+            'docs',
+            'postman',
+            'china-parts-reels.postman_collection.json',
+          ),
+          'utf8',
+        ),
+      ) as PostmanNode;
+
+      // `{{reelId}}`, `:id` and a literal reel id are all "some id".
+      const generic = (segment: string) =>
+        /^(\{\{.+\}\}|:.+|[0-9a-f]{24})$/.test(segment) ? ':p' : segment;
+      const inCollection = new Set<string>();
+      const walk = (nodes: PostmanNode[]) => {
+        for (const node of nodes) {
+          if (node.item) walk(node.item);
+          if (node.request) {
+            inCollection.add(
+              `${node.request.method.toLowerCase()} /${node.request.url.path.map(generic).join('/')}`,
+            );
+          }
+        }
+      };
+      walk(collection.item ?? []);
+      const routes = new Set(
+        discoverRoutes().map(
+          (route) =>
+            `${route.method} /${route.path.split('/').filter(Boolean).map(generic).join('/')}`,
+        ),
+      );
+
+      expect([...routes].filter((route) => !inCollection.has(route))).toEqual(
+        [],
+      );
+      expect([...inCollection].filter((route) => !routes.has(route))).toEqual(
+        [],
+      );
     });
 
     it('is the level the contract gives each route', () => {
